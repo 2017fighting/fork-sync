@@ -235,11 +235,98 @@ test_conflict_comments_on_open_issue_instead_of_duplicating() {
     "no duplicate issue is created while one is open"
 }
 
+test_noop_when_mark_already_points_at_base_head() {
+  # The first sync Marks the Fork (v1.3.2 at main's head). A rerun before
+  # any new Upstream tag must be a no-op: nothing pushed, no Mark changes.
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "the first sync exits 0"
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" \
+    "$(remote_sha "$FIX_FORK" refs/heads/main)" \
+    "fixture: the Mark sits at the base branch head after the first sync"
+
+  local fork_refs
+  fork_refs=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "the rerun with no new tag exits 0"
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_refs" \
+    "the no-op pushes nothing: no ref on the Fork changes"
+  assert_contains "$ENTRY_OUTPUT" "No-op" \
+    "the no-op is clearly distinguished from a sync in the output"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the stable Sync Tag line survives for the status matrix"
+  assert_gh_not_called "a no-op never notifies"
+}
+
+test_already_contains_refreshes_mark_leaving_history_untouched() {
+  local upstream_v132
+  upstream_v132=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.2)
+  build_already_contains_scenario "$TEST_DIR"
+  clone_fork_observer
+
+  # Preconditions: the Fork's main already contains the Sync Tag (8 Upstream
+  # commits + 2 Own Commits), and the inherited v1.3.2 still points at the
+  # Upstream's commit.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$upstream_v132" \
+    "fixture: the Fork carries the inherited v1.3.2 at the Upstream commit"
+  if ! git -C "$OBSERVE" merge-base --is-ancestor "$upstream_v132" refs/heads/main; then
+    printf 'FAIL fixture: the Fork main does not contain the Sync Tag\n'
+    return 1
+  fi
+  assert_eq "$(git -C "$OBSERVE" rev-list --count refs/heads/main)" 10 \
+    "fixture: the Fork main holds 8 Upstream commits + 2 Own Commits"
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "already-contains sync exits 0"
+
+  # Forward-only: history untouched — the head is byte-identical, so no
+  # rebase rewrote the Own Commits and no post-tag Upstream commit was lost.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/heads/main)" "$OBSERVED_PRE_HEAD" \
+    "history untouched: the base branch head is byte-identical"
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$OBSERVED_PRE_HEAD" \
+    "the Mark is refreshed at the Fork's head"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the run reports the chosen Sync Tag"
+  assert_gh_not_called "a forward-only sync never notifies"
+}
+
+test_pure_fork_fast_forwards_to_sync_tag() {
+  local upstream_v132 upstream_v131
+  upstream_v132=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.2)
+  upstream_v131=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.1)
+  build_pure_fork_scenario "$TEST_DIR"
+  clone_fork_observer
+
+  assert_eq "$(remote_sha "$FIX_FORK" refs/heads/main)" "$upstream_v131" \
+    "fixture: the pure Fork sits at v1.3.1 with zero Own Commits"
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "pure-fork sync exits 0"
+
+  # Fast-forward: the base branch lands exactly on the Sync Tag's commit —
+  # no commit rewritten — and the old head stays inside the history.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/heads/main)" "$upstream_v132" \
+    "the base branch fast-forwards to the Sync Tag's commit"
+  fetch_synced_base_branch
+  if ! git -C "$OBSERVE" merge-base --is-ancestor "$OBSERVED_PRE_HEAD" refs/heads/after; then
+    printf 'FAIL fast-forward: the pre-sync head is not an ancestor of the synced head\n'
+    return 1
+  fi
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$upstream_v132" \
+    "the Mark is created at the Sync Tag's commit, now the Fork's head"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the run reports the chosen Sync Tag"
+  assert_gh_not_called "a pure-fork sync never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
   test_reports_chosen_sync_tag
   test_leaves_upstream_untouched_and_never_notifies
+  test_noop_when_mark_already_points_at_base_head
+  test_already_contains_refreshes_mark_leaving_history_untouched
+  test_pure_fork_fast_forwards_to_sync_tag
 )
 
 # Conflict-path tests run against the rebase-conflict fixture variant.

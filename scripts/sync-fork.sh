@@ -7,7 +7,7 @@
 #      the configured prefix, stable releases only (prereleases excluded);
 #   2. rebases the Fork's Own Commits onto the Sync Tag (rebase --onto over
 #      the merge-base with the Upstream's default branch), yielding linear
-#      history;
+#      history; a pure Fork with zero Own Commits fast-forwards instead;
 #   3. force-pushes the Fork's base branch, with lease against the just-fetched
 #      ref;
 #   4. Marks the Fork: a tag of the Sync Tag's name pointing at the Fork's own
@@ -201,6 +201,21 @@ main() {
   merge_base=$("${git[@]}" -C "$work" merge-base \
     "refs/remotes/fork/$base_branch" "refs/remotes/upstream/$default_branch")
 
+  # No-op detection (spec issue #1, "No-op detection"): when the Fork already
+  # carries a Mark equal to the Sync Tag pointing at its current base branch
+  # head, the run does nothing. The Mark is read straight from the Fork
+  # remote (ls-remote), never from the work repo: fetching a Fork whose
+  # inherited tag was force-moved only yields "! [rejected] (already exists)"
+  # and the local tag would silently keep the Upstream's position.
+  local mark_sha
+  mark_sha=$(git ls-remote "$fork_url" "refs/tags/$sync_tag" | cut -f1)
+  if [ -n "$mark_sha" ] && [ "$mark_sha" = "$fork_base_sha" ]; then
+    printf 'No-op: the Mark %s already points at the head of %s\n' \
+      "$sync_tag" "$base_branch"
+    printf 'Sync Tag: %s\n' "$sync_tag"
+    return 0
+  fi
+
   # Rebase rewrites the Own Commits; it needs a committer identity even on
   # runners without one configured. Authors are preserved by the rebase.
   if [ -z "$("${git[@]}" -C "$work" config user.email)" ]; then
@@ -208,20 +223,38 @@ main() {
     export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-fork-sync@invalid}"
   fi
 
-  "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
-  local rebase_output
-  if ! rebase_output=$("${git[@]}" -C "$work" rebase --onto "$sync_commit" \
-    "$merge_base" "$base_branch" 2>&1); then
-    report_rebase_conflict "$fork_url" "$sync_tag" "$work" "$rebase_output"
-  fi
-  printf '%s\n' "$rebase_output" >&2
-
+  # Forward-only gate (the default policy): if the Fork's base branch already
+  # contains the Sync Tag, the Fork never moves backward in Upstream history —
+  # skip the rebase entirely (rebase --onto would rewind the post-tag Upstream
+  # commits out of the Fork) and only refresh the Mark at the Fork's head.
+  # Strict tag sync (forward_only: false, a later ticket) skips this gate.
   local new_head
-  new_head=$("${git[@]}" -C "$work" rev-parse "refs/heads/$base_branch")
+  if "${git[@]}" -C "$work" merge-base --is-ancestor "$sync_commit" "$fork_base_sha"; then
+    new_head=$fork_base_sha
+  else
+    if [ "$("${git[@]}" -C "$work" rev-list --count "$merge_base..$fork_base_sha")" -eq 0 ]; then
+      # Pure fork (zero Own Commits): fast-forward the base branch straight
+      # to the Sync Tag — no rebase machinery for a mirror with nothing to
+      # replay.
+      "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$sync_commit"
+    else
+      "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
+      # On a conflict the rebase fails before anything has been pushed, so
+      # aborting is simply not reaching the pushes below (report_rebase_conflict
+      # never returns).
+      local rebase_output
+      if ! rebase_output=$("${git[@]}" -C "$work" rebase --onto "$sync_commit" \
+        "$merge_base" "$base_branch" 2>&1); then
+        report_rebase_conflict "$fork_url" "$sync_tag" "$work" "$rebase_output"
+      fi
+      printf '%s\n' "$rebase_output" >&2
+    fi
+    new_head=$("${git[@]}" -C "$work" rev-parse "refs/heads/$base_branch")
 
-  "${git[@]}" -C "$work" push --quiet \
-    --force-with-lease="refs/heads/$base_branch:$fork_base_sha" \
-    fork "refs/heads/$base_branch"
+    "${git[@]}" -C "$work" push --quiet \
+      --force-with-lease="refs/heads/$base_branch:$fork_base_sha" \
+      fork "refs/heads/$base_branch"
+  fi
 
   # Mark the Fork: a tag of the Sync Tag's name pointing at the Fork's own
   # head, force-moving an inherited Upstream tag of that name (ADR-0001).
