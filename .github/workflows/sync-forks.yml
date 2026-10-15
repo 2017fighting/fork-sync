@@ -1,5 +1,5 @@
-# Sync every Fork declared in forks.yml onto its Upstream's latest stable
-# release tag (spec issue #1; deployment guide: docs/deploying.md).
+# Sync every Fork declared in forks.yml onto its Upstream's Sync Tag (spec
+# issue #1; deployment guide: docs/deploying.md).
 #
 # Shape: the setup job parses the manifest once (Python/PyYAML, preinstalled
 # on the runner) into a JSON array of per-Fork configs and exports it as the
