@@ -215,6 +215,26 @@ test_conflict_files_issue_on_center_repo_when_none_is_open() {
     "no comment is posted when no issue is open"
 }
 
+test_conflict_comments_on_open_issue_instead_of_duplicating() {
+  # Stage the open-issue state the fake gh reports: one open conflict issue
+  # for this Fork, filed by an earlier conflicted run.
+  printf '[{"number": 42, "title": "fork-sync conflict: %s onto v1.3.2"}]\n' \
+    "$FIX_FORK" >"$TEST_DIR/gh-issue-list.json"
+  export GH_FAKE_ISSUE_LIST="$TEST_DIR/gh-issue-list.json"
+
+  run_entry_point
+  local spy
+  spy=$(cat "$GH_SPY_LOG")
+  assert_contains "$spy" "issue list --repo example/fork-sync-center" \
+    "discovery looks for open issues on the central repo"
+  assert_contains "$spy" "$FIX_FORK in:title" \
+    "discovery searches issue titles for this Fork"
+  assert_contains "$spy" "issue comment 42 --repo example/fork-sync-center" \
+    "an open issue for the Fork is commented on"
+  assert_not_contains "$spy" "issue create" \
+    "no duplicate issue is created while one is open"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -227,6 +247,7 @@ CONFLICT_TESTS=(
   test_conflict_aborts_all_fork_mutations_and_exits_nonzero
   test_conflict_output_names_fork_sync_tag_and_conflicting_own_commits
   test_conflict_files_issue_on_center_repo_when_none_is_open
+  test_conflict_comments_on_open_issue_instead_of_duplicating
 )
 
 # builder_for <test-name> — the fixture variant a test runs against (the

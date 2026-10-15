@@ -123,16 +123,29 @@ conflict_issue_body() {
 # management repo titled after the Fork and the Sync Tag, with remedy steps.
 # The repo is FORK_SYNC_CENTER_REPO (owner/name), injectable so tests run
 # against the fake gh; the workflow wires the real value (ticket #6).
+# Reuse: while an issue about this Fork's sync conflicts is still open, the
+# run comments on it instead of filing a duplicate (spec issue #1, story
+# 18). Discovery is a title search for the Fork, matching the deterministic
+# title below.
 notify_conflict() {
   local fork_url=$1 sync_tag=$2 conflicts=$3
-  local center title body
+  local center title body number issues
   center=${FORK_SYNC_CENTER_REPO:-}
   [ -n "$center" ] ||
     die "FORK_SYNC_CENTER_REPO (owner/name of the central management repo) is unset: cannot file the conflict issue"
   title="fork-sync conflict: $fork_url onto $sync_tag"
   body=$(conflict_issue_body "$fork_url" "$sync_tag" "$conflicts")
-  gh issue create --repo "$center" --title "$title" --body "$body"
-  printf 'sync-fork: conflict filed as a new issue on %s\n' "$center" >&2
+  issues=$(gh issue list --repo "$center" --state open \
+    --search "fork-sync conflict $fork_url in:title" --json number) ||
+    issues='[]'
+  number=$(jq -r '.[0].number // empty' <<<"$issues") || number=''
+  if [ -n "$number" ]; then
+    gh issue comment "$number" --repo "$center" --body "$body"
+    printf 'sync-fork: conflict reported on issue #%s of %s\n' "$number" "$center" >&2
+  else
+    gh issue create --repo "$center" --title "$title" --body "$body"
+    printf 'sync-fork: conflict filed as a new issue on %s\n' "$center" >&2
+  fi
 }
 
 # upstream_default_branch <upstream_url> — Own Commits are defined against the
