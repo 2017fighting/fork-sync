@@ -121,15 +121,23 @@ main() {
     export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-fork-sync@invalid}"
   fi
 
-  "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
-  "${git[@]}" -C "$work" rebase --onto "$sync_commit" "$merge_base" "$base_branch"
-
+  # Forward-only gate (the default policy): if the Fork's base branch already
+  # contains the Sync Tag, the Fork never moves backward in Upstream history —
+  # skip the rebase entirely (rebase --onto would rewind the post-tag Upstream
+  # commits out of the Fork) and only refresh the Mark at the Fork's head.
+  # Strict tag sync (forward_only: false, a later ticket) skips this gate.
   local new_head
-  new_head=$("${git[@]}" -C "$work" rev-parse "refs/heads/$base_branch")
+  if "${git[@]}" -C "$work" merge-base --is-ancestor "$sync_commit" "$fork_base_sha"; then
+    new_head=$fork_base_sha
+  else
+    "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
+    "${git[@]}" -C "$work" rebase --onto "$sync_commit" "$merge_base" "$base_branch"
+    new_head=$("${git[@]}" -C "$work" rev-parse "refs/heads/$base_branch")
 
-  "${git[@]}" -C "$work" push --quiet \
-    --force-with-lease="refs/heads/$base_branch:$fork_base_sha" \
-    fork "refs/heads/$base_branch"
+    "${git[@]}" -C "$work" push --quiet \
+      --force-with-lease="refs/heads/$base_branch:$fork_base_sha" \
+      fork "refs/heads/$base_branch"
+  fi
 
   # Mark the Fork: a tag of the Sync Tag's name pointing at the Fork's own
   # head, force-moving an inherited Upstream tag of that name (ADR-0001).

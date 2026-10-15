@@ -183,12 +183,45 @@ test_noop_when_mark_already_points_at_base_head() {
   assert_gh_not_called "a no-op never notifies"
 }
 
+test_already_contains_refreshes_mark_leaving_history_untouched() {
+  local upstream_v132
+  upstream_v132=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.2)
+  build_already_contains_scenario "$TEST_DIR"
+  clone_fork_observer
+
+  # Preconditions: the Fork's main already contains the Sync Tag (8 Upstream
+  # commits + 2 Own Commits), and the inherited v1.3.2 still points at the
+  # Upstream's commit.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$upstream_v132" \
+    "fixture: the Fork carries the inherited v1.3.2 at the Upstream commit"
+  if ! git -C "$OBSERVE" merge-base --is-ancestor "$upstream_v132" refs/heads/main; then
+    printf 'FAIL fixture: the Fork main does not contain the Sync Tag\n'
+    return 1
+  fi
+  assert_eq "$(git -C "$OBSERVE" rev-list --count refs/heads/main)" 10 \
+    "fixture: the Fork main holds 8 Upstream commits + 2 Own Commits"
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "already-contains sync exits 0"
+
+  # Forward-only: history untouched — the head is byte-identical, so no
+  # rebase rewrote the Own Commits and no post-tag Upstream commit was lost.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/heads/main)" "$OBSERVED_PRE_HEAD" \
+    "history untouched: the base branch head is byte-identical"
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$OBSERVED_PRE_HEAD" \
+    "the Mark is refreshed at the Fork's head"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the run reports the chosen Sync Tag"
+  assert_gh_not_called "a forward-only sync never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
   test_reports_chosen_sync_tag
   test_leaves_upstream_untouched_and_never_notifies
   test_noop_when_mark_already_points_at_base_head
+  test_already_contains_refreshes_mark_leaving_history_untouched
 )
 
 run_test() {
