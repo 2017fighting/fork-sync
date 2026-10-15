@@ -22,7 +22,8 @@ MANIFEST_TESTS=(
   test_manifest_missing_forks_key_fails
   test_manifest_invalid_yaml_fails
   test_workflow_and_manifest_yaml_are_well_formed
-  test_shipped_forks_yml_example_validates
+  test_workflow_wires_exactly_one_authorization_header
+  test_shipped_forks_yml_validates
 )
 
 # Transform tests that also need the canonical git fixtures (the entry-point
@@ -320,12 +321,122 @@ sys.exit(0 if ok else 1)
 PY
 }
 
-test_shipped_forks_yml_example_validates() {
+# Regression pin (run 38699330127): actions/checkout persists its own
+# GITHUB_TOKEN as a LOCAL http extraheader, and the workflow added a GLOBAL
+# one for the PAT. Git then sent two Authorization headers and GitHub
+# rejected every fetch with a 400 "Duplicate header: Authorization" — so
+# each Fork failed before its Upstream was ever read. Exactly one
+# Authorization header must reach github.com: checkout must not persist a
+# credential, any leftover extraheader must be dropped, and the PAT must be
+# installed with --replace-all (appending a second value to the key would
+# reintroduce the duplicate).
+test_workflow_wires_exactly_one_authorization_header() {
+  python3 - "$root/.github/workflows/sync-forks.yml" <<'PY'
+import re
+import sys
+
+import yaml
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    workflow = yaml.safe_load(handle)
+
+problems = []
+steps = workflow["jobs"]["sync"]["steps"]
+
+checkout = next(
+    (step for step in steps if str(step.get("uses", "")).startswith("actions/checkout")),
+    None,
+)
+if checkout is None:
+    problems.append("the sync job has no actions/checkout step")
+else:
+    persisted = (checkout.get("with") or {}).get("persist-credentials")
+    if persisted is not False:
+        problems.append(
+            "actions/checkout must set persist-credentials: false in the sync "
+            "job, or it leaves its own Authorization extraheader behind "
+            f"(found {persisted!r})"
+        )
+
+sync = next((step for step in steps if step.get("name") == "Sync one Fork"), None)
+if sync is None:
+    problems.append("the sync job has no 'Sync one Fork' step")
+else:
+    run = sync.get("run", "")
+    # Flatten line continuations and whitespace runs so the pins below assert
+    # the command sequence, not how the YAML author wrapped the lines.
+    flat = re.sub(r"\\\n\s*", " ", run)
+    flat = re.sub(r"[ \t]+", " ", flat)
+    unset = re.search(
+        r"git config --local --unset-all http\.https://github\.com/\.extraheader [^|]*\|\| true",
+        flat,
+    )
+    install = re.search(
+        r"git config --global --replace-all http\.https://github\.com/\.extraheader",
+        flat,
+    )
+    if unset is None:
+        problems.append(
+            "the sync step must drop any persisted extraheader first "
+            "('git config --local --unset-all ... || true')"
+        )
+    if install is None:
+        problems.append(
+            "the sync step must install the PAT with --replace-all, never by "
+            "appending a second value to the extraheader key"
+        )
+    if unset and install and unset.start() > install.start():
+        problems.append("the extraheader must be unset before the PAT is installed")
+
+for problem in problems:
+    print(f"{path}: {problem}")
+sys.exit(1 if problems else 0)
+PY
+}
+
+# The shipped manifest is live configuration (real Forks), so it is not pinned
+# to specific entries: what must hold is that it validates and that every entry
+# resolves to the full per-Fork contract with the documented defaults applied —
+# exactly the JSON the workflow's setup job hands the entry script.
+test_shipped_forks_yml_validates() {
   run_transform "$root/forks.yml"
   assert_rc 0 "$MANIFEST_STATUS" "the shipped manifest validates"
-  assert_eq "$(jq -r 'length' <<<"$MANIFEST_OUTPUT")" "1" \
-    "the shipped manifest holds exactly the one EXAMPLE entry"
-  assert_eq "$(jq -c '.[0]' <<<"$MANIFEST_OUTPUT")" \
-    '{"fork":"https://github.com/fork-sync-example/example-fork.git","upstream":"https://github.com/fork-sync-example/example-project.git","base_branch":"main","tag_prefix":"v","forward_only":true,"include_prereleases":false}' \
-    "the EXAMPLE entry resolves to the documented built-in defaults"
+  python3 - "$MANIFEST_OUTPUT" <<'PY'
+import json
+import sys
+
+configs = json.loads(sys.argv[1])
+contract = [
+    "fork",
+    "upstream",
+    "base_branch",
+    "tag_prefix",
+    "forward_only",
+    "include_prereleases",
+]
+
+problems = []
+if not configs:
+    problems.append("the shipped manifest declares no Forks")
+for config in configs:
+    name = config.get("fork", "<entry without fork>")
+    if sorted(config) != sorted(contract):
+        problems.append(f"{name}: keys are {sorted(config)}, expected {sorted(contract)}")
+        continue
+    if not all(str(config[field]).startswith("https://") for field in ("fork", "upstream")):
+        problems.append(f"{name}: fork and upstream must be https URLs")
+    if not isinstance(config["forward_only"], bool) or not isinstance(
+        config["include_prereleases"], bool
+    ):
+        problems.append(f"{name}: forward_only and include_prereleases must be booleans")
+    if not isinstance(config["tag_prefix"], str):
+        problems.append(f"{name}: tag_prefix must be a string")
+    if not isinstance(config["base_branch"], str) or not config["base_branch"]:
+        problems.append(f"{name}: base_branch must be a non-empty string")
+
+for problem in problems:
+    print(problem)
+sys.exit(1 if problems else 0)
+PY
 }

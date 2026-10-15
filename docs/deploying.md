@@ -32,10 +32,9 @@ forks:
 - A Fork entry's own value always wins over `defaults`; `defaults` wins over
   the built-ins shown above. Every field the sync needs is resolved before
   the run starts.
-- The shipped file contains one **EXAMPLE** entry (not a real Fork) so the
-  manifest's shape is visible from day one; it fails loudly until replaced.
-  **Replace it with a real Fork as your first step** — or set `forks: []`
-  until you are ready (the run then does nothing).
+- The shipped file lists this repo's real Forks. A misconfigured entry fails
+  loudly instead of syncing anything; `forks: []` is valid and makes the run
+  do nothing.
 - Adding or removing a Fork is a one-line change: edit `forks.yml`, commit,
   push. The next run picks it up — daily at 04:17 UTC, or dispatch manually
   (below).

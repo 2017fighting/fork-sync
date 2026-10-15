@@ -12,7 +12,10 @@
 # workflow's own GITHUB_TOKEN can push nothing across repos and is used
 # solely, via gh (GH_TOKEN), to file and comment on conflict issues on this
 # repo (permissions: issues: write). The entry script itself stays
-# credential-agnostic; the PAT is wired in as a git http extraheader here.
+# credential-agnostic; the PAT is wired in as a git http extraheader here —
+# and it must be the ONLY Authorization header reaching github.com (see the
+# checkout step and the sync step below: two headers make GitHub answer 400
+# "Duplicate header: Authorization").
 ---
 name: Sync Forks
 
@@ -55,7 +58,13 @@ jobs:
       matrix:
         fork: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
+      # persist-credentials: false keeps actions/checkout from installing its
+      # own GITHUB_TOKEN as a local http extraheader. Left in place, that
+      # header and the PAT header below would both be sent, and GitHub rejects
+      # the request with 400 "Duplicate header: Authorization".
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Sync one Fork
         env:
           # Conflict issues are filed on this central repo via gh; pushes
@@ -77,7 +86,14 @@ jobs:
           # sync's clones via the global config; sync-fork.sh itself never
           # sees a credential. base64 -w0: fine-grained PATs are long enough
           # that wrapped base64 would break the header.
+          #
+          # Exactly one Authorization header may be sent: drop any leftover
+          # extraheader first (|| true — the key is absent when checkout
+          # persisted nothing), then --replace-all rather than append, so a
+          # pre-existing value can never join the PAT as a second header.
+          git config --local --unset-all http.https://github.com/.extraheader \
+            >/dev/null 2>&1 || true
           auth=$(printf 'x-access-token:%s' "$FORK_SYNC_PAT" | base64 -w0)
-          git config --global http.https://github.com/.extraheader \
-            "Authorization: Basic $auth"
+          git config --global --replace-all \
+            http.https://github.com/.extraheader "Authorization: Basic $auth"
           scripts/sync-fork.sh "$FORK_CONFIG"

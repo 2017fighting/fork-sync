@@ -35,9 +35,6 @@ defaults:
   include_prereleases: false
 
 forks:
-  # EXAMPLE — not a real Fork. Replace this entry with a real one before
-  # your first run (docs/deploying.md); until then this row fails loudly on
-  # purpose so an unconfigured manifest cannot pass unnoticed.
   - fork: "https://github.com/2017fighting/hapi.git"
     upstream: "https://github.com/tiann/hapi.git"
     base_branch: "main"
@@ -51,4 +48,3 @@ forks:
   - fork: "https://github.com/2017fighting/hath-rust.git"
     upstream: "https://github.com/james58899/hath-rust.git"
     base_branch: "main"
-
