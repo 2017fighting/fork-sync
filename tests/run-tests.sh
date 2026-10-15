@@ -160,6 +160,22 @@ test_leaves_upstream_untouched_and_never_notifies() {
   assert_gh_not_called "a happy-path sync never touches the notification dependency"
 }
 
+test_conflict_aborts_all_fork_mutations_and_exits_nonzero() {
+  local fork_before
+  fork_before=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point
+  if [ "$ENTRY_STATUS" -eq 0 ]; then
+    printf 'FAIL conflict run: expected a non-zero exit code, got 0\n'
+    return 1
+  fi
+
+  # ls-remote lists every branch and tag, so identical output proves the
+  # aborted run moved nothing on the Fork remote.
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_before" \
+    "a conflicted run leaves the Fork's branches and tags byte-identical"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -167,8 +183,27 @@ TESTS=(
   test_leaves_upstream_untouched_and_never_notifies
 )
 
+# Conflict-path tests run against the rebase-conflict fixture variant.
+CONFLICT_TESTS=(
+  test_conflict_aborts_all_fork_mutations_and_exits_nonzero
+)
+
+# builder_for <test-name> — the fixture variant a test runs against (the
+# runner's default is the canonical scenario; conflict tests are listed in
+# CONFLICT_TESTS).
+builder_for() {
+  local name
+  for name in "${CONFLICT_TESTS[@]}"; do
+    if [ "$name" = "$1" ]; then
+      printf 'build_conflict_scenario\n'
+      return
+    fi
+  done
+  printf 'build_canonical_scenario\n'
+}
+
 run_test() {
-  local name=$1 dir out rc
+  local name=$1 builder=${2:-build_canonical_scenario} dir out rc
   dir=$(mktemp -d "${TMPDIR:-/tmp}/fork-sync-test.XXXXXX")
   printf -- '--- %s\n' "$name"
   # The group runs inside command substitution, NOT in an if-condition: bash
@@ -183,7 +218,7 @@ run_test() {
     TEST_DIR=$dir
     GH_SPY_LOG=$dir/gh-calls.log
     : >"$GH_SPY_LOG"
-    build_canonical_scenario "$dir"
+    "$builder" "$dir"
     "$name"
   } 2>&1)
   rc=$?
@@ -202,9 +237,10 @@ run_test() {
 main() {
   local name
   if [ "$#" -gt 0 ]; then
-    for name in "$@"; do run_test "$name"; done
+    for name in "$@"; do run_test "$name" "$(builder_for "$name")"; done
   else
-    for name in "${TESTS[@]}"; do run_test "$name"; done
+    for name in "${TESTS[@]}"; do run_test "$name" "$(builder_for "$name")"; done
+    for name in "${CONFLICT_TESTS[@]}"; do run_test "$name" build_conflict_scenario; done
   fi
   printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
   if [ "$FAIL" -ne 0 ]; then
