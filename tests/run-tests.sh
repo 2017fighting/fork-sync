@@ -280,6 +280,21 @@ test_strict_mode_rewinds_post_tag_upstream_commits() {
   assert_gh_not_called "a strict-mode sync never notifies"
 }
 
+test_prerelease_tags_are_skipped_by_default() {
+  # The canonical fixture carries v1.4.0-rc.1 above v1.3.2 (spec story 7):
+  # selection must pick the greatest *stable* tag and never Mark a
+  # prerelease on the Fork.
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "sync with a newer prerelease present exits 0"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the greatest stable tag wins over the newer prerelease"
+  [ -z "$(remote_sha "$FIX_FORK" refs/tags/v1.4.0-rc.1)" ] || {
+    printf 'FAIL the skipped prerelease was Marked on the Fork\n'
+    return 1
+  }
+  assert_gh_not_called "a stable sync never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -288,6 +303,7 @@ TESTS=(
   test_noop_when_mark_already_points_at_base_head
   test_already_contains_refreshes_mark_leaving_history_untouched
   test_strict_mode_rewinds_post_tag_upstream_commits
+  test_prerelease_tags_are_skipped_by_default
   test_pure_fork_fast_forwards_to_sync_tag
 )
 
