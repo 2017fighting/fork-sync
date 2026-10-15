@@ -1,0 +1,47 @@
+# forks.yml — the manifest of Forks this central management repo keeps
+# synced with their Upstreams' stable release tags (spec issue #1).
+#
+# Schema (validated by scripts/manifest-to-matrix.py; guide: docs/deploying.md):
+#
+#   defaults:  optional global policy, any of the three fields below;
+#              a Fork entry's own value always wins over these.
+#   forks:     the list of Fork entries; `forks: []` is a valid empty state.
+#
+#   Each Fork entry:
+#     fork, upstream, base_branch   — required, non-empty strings (the two
+#                                     remote URLs and the Fork's branch).
+#     tag_prefix                    — optional, string (default "v"); "" makes
+#                                     every semver tag match.
+#     forward_only                  — optional, boolean (default true); false
+#                                     = strict tag sync (may rewind post-tag
+#                                     Upstream commits out of the Fork).
+#     include_prereleases           — optional, boolean (default false).
+#
+# Unknown fields are rejected: a typo like `forward-only` would otherwise
+# silently fall back to a default.
+#
+# Adding a Fork = adding one entry here and pushing; the next run (daily
+# 04:17 UTC, or a manual dispatch) picks it up.
+---
+defaults:
+  # Forward-only policy (GLOSSARY.md): never move backward in Upstream
+  # history; a Fork already containing the Sync Tag only gets its Mark
+  # refreshed.
+  forward_only: true
+  # Sync Tag selection only sees Upstream tags with this prefix; the rest of
+  # the name must be semver.
+  tag_prefix: "v"
+  # Prerelease tags (e.g. v1.4.0-rc.1) are skipped unless included here.
+  include_prereleases: false
+
+forks:
+  # EXAMPLE — not a real Fork. Replace this entry with a real one before
+  # your first run (docs/deploying.md); until then this row fails loudly on
+  # purpose so an unconfigured manifest cannot pass unnoticed.
+  - fork: "https://github.com/fork-sync-example/example-fork.git"
+    upstream: "https://github.com/fork-sync-example/example-project.git"
+    base_branch: "main"
+    # Optional per-Fork overrides (these are the defaults shown above):
+    # tag_prefix: "v"
+    # forward_only: true
+    # include_prereleases: false

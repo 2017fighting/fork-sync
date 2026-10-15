@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Test runner for the per-Fork sync entry point (scripts/sync-fork.sh).
+# Test runner for the per-Fork sync entry point (scripts/sync-fork.sh) and
+# the manifest→matrix transform (scripts/manifest-to-matrix.py, ticket #6).
 #
-# Plain bash; zero dependencies beyond git and jq. Every test exercises only
-# the entry-point seam (spec issue #1, Testing Decisions): fixture bare
-# remotes over file://, the script's exit code and stdout, the remotes'
-# observable git state, and the fake gh's recorded invocations.
+# Plain bash; zero dependencies beyond git and jq for the sync seam. Every
+# sync test exercises only the entry-point seam (spec issue #1, Testing
+# Decisions): fixture bare remotes over file://, the script's exit code and
+# stdout, the remotes' observable git state, and the fake gh's recorded
+# invocations. The manifest tests additionally need python3 + PyYAML and are
+# skipped with an explicit SKIP line when those are unavailable.
 #
 # Usage: tests/run-tests.sh [test function name ...]   (default: all tests)
 set -u
@@ -15,9 +18,11 @@ TESTS_BIN="$here/bin"
 SCRIPT="$root/scripts/sync-fork.sh"
 
 . "$here/lib/fixtures.sh"
+. "$here/lib/manifest-tests.sh"
 
 PASS=0
 FAIL=0
+SKIPPED=0
 FAILED=()
 
 assert_rc() { # expected_rc actual_rc label
@@ -496,7 +501,8 @@ CONFLICT_TESTS=(
 
 # builder_for <test-name> — the fixture variant a test runs against (the
 # runner's default is the canonical scenario; conflict tests are listed in
-# CONFLICT_TESTS).
+# CONFLICT_TESTS; the transform's entry-point glue test needs the canonical
+# fixtures too, every other manifest test needs none).
 builder_for() {
   local name
   for name in "${CONFLICT_TESTS[@]}"; do
@@ -505,7 +511,48 @@ builder_for() {
       return
     fi
   done
+  for name in "${MANIFEST_CANONICAL_TESTS[@]}"; do
+    if [ "$name" = "$1" ]; then
+      printf 'build_canonical_scenario\n'
+      return
+    fi
+  done
+  for name in "${MANIFEST_TESTS[@]}"; do
+    if [ "$name" = "$1" ]; then
+      printf 'build_no_fixture\n'
+      return
+    fi
+  done
   printf 'build_canonical_scenario\n'
+}
+
+# No-op fixture builder: the manifest-transform tests carry their own
+# fixtures (forks.yml files) and need no git remotes.
+build_no_fixture() { :; }
+
+# manifest_tooling_available — the transform suite needs python3 with
+# PyYAML. The GitHub ubuntu runner ships both; a machine without them gets
+# an explicit SKIP line per test instead of failures.
+manifest_tooling_available() {
+  command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import yaml' >/dev/null 2>&1
+}
+
+run_manifest_tests() {
+  local name
+  # The transform tests plus the entry-point glue test (which needs the
+  # canonical fixtures via builder_for); all gated on python3 + PyYAML.
+  local all=("${MANIFEST_TESTS[@]}" "${MANIFEST_CANONICAL_TESTS[@]}")
+  if manifest_tooling_available; then
+    for name in "${all[@]}"; do
+      run_test "$name" "$(builder_for "$name")"
+    done
+  else
+    for name in "${all[@]}"; do
+      printf 'SKIP %s: python3 with PyYAML unavailable (the manifest transform tests need them; the GitHub runner has PyYAML preinstalled)\n' "$name"
+      SKIPPED=$((SKIPPED + 1))
+    done
+  fi
 }
 
 run_test() {
@@ -548,8 +595,9 @@ main() {
   else
     for name in "${TESTS[@]}"; do run_test "$name" "$(builder_for "$name")"; done
     for name in "${CONFLICT_TESTS[@]}"; do run_test "$name" build_conflict_scenario; done
+    run_manifest_tests
   fi
-  printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+  printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIPPED"
   if [ "$FAIL" -ne 0 ]; then
     printf 'failed tests: %s\n' "${FAILED[*]}"
     exit 1
