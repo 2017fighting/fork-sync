@@ -89,6 +89,19 @@ build_already_contains_scenario() { # <dir>
   rm -rf "$work"
 }
 
+# Prerelease-only variant: strips the Upstream's stable tags, leaving only
+# v1.4.0-rc.1 — selection with default prerelease skipping must fail loudly
+# instead of silently skipping the Fork.
+build_prerelease_only_upstream() { # <dir>
+  local dir=$1
+  local work="$dir/variant-work"
+
+  git clone --quiet "$FIX_UPSTREAM" "$work"
+  git -C "$work" push --quiet "$FIX_UPSTREAM" \
+    :refs/tags/v1.3.0 :refs/tags/v1.3.1 :refs/tags/v1.3.2
+  rm -rf "$work"
+}
+
 # Tagless variant: strips every tag from the Upstream — the configuration-
 # error shape of story 21 ("no tags at all"). A run must fail loudly instead
 # of silently skipping the Fork.

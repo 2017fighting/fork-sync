@@ -312,6 +312,23 @@ test_upstream_without_tags_fails_loudly() {
   assert_gh_not_called "a configuration error never notifies"
 }
 
+test_prerelease_only_upstream_fails_loudly() {
+  # With prerelease skipping on (the default), an Upstream offering only
+  # prereleases must fail the run — never silently skip the Fork — with a
+  # message distinct from the tagless configuration error.
+  local fork_refs
+  build_prerelease_only_upstream "$TEST_DIR"
+  fork_refs=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point
+  assert_rc 1 "$ENTRY_STATUS" "a prerelease-only Upstream fails the run"
+  assert_contains "$ENTRY_OUTPUT" "prereleases" \
+    "the failure names the prerelease policy as the cause"
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_refs" \
+    "the failed run leaves the Fork untouched"
+  assert_gh_not_called "a policy failure never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -322,6 +339,7 @@ TESTS=(
   test_strict_mode_rewinds_post_tag_upstream_commits
   test_prerelease_tags_are_skipped_by_default
   test_upstream_without_tags_fails_loudly
+  test_prerelease_only_upstream_fails_loudly
   test_pure_fork_fast_forwards_to_sync_tag
 )
 
