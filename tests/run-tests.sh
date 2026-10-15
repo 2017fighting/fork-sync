@@ -324,9 +324,26 @@ test_prerelease_only_upstream_fails_loudly() {
   assert_rc 1 "$ENTRY_STATUS" "a prerelease-only Upstream fails the run"
   assert_contains "$ENTRY_OUTPUT" "prereleases" \
     "the failure names the prerelease policy as the cause"
+  assert_contains "$ENTRY_OUTPUT" "include_prereleases" \
+    "the failure names the config field that flips the policy"
   assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_refs" \
     "the failed run leaves the Fork untouched"
   assert_gh_not_called "a policy failure never notifies"
+}
+
+test_upstream_without_matching_prefix_fails_loudly() {
+  # A prefix matching no tag is the same class of configuration error as a
+  # tagless Upstream (distinct message), even though tags exist.
+  local fork_refs
+  fork_refs=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point '{"tag_prefix": "release-"}'
+  assert_rc 1 "$ENTRY_STATUS" "a prefix matching no tag fails the run"
+  assert_contains "$ENTRY_OUTPUT" "no stable tag with prefix 'release-'" \
+    "the failure names the unmatched prefix"
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_refs" \
+    "the failed run leaves the Fork untouched"
+  assert_gh_not_called "a configuration error never notifies"
 }
 
 test_include_prereleases_tracks_greatest_prerelease() {
@@ -349,6 +366,33 @@ test_include_prereleases_tracks_greatest_prerelease() {
   assert_gh_not_called "a prerelease sync never notifies"
 }
 
+test_prefix_filters_tags_invisible_to_selection() {
+  # Prefix filtering (spec story 6, "Implementation Decisions"): tags without
+  # the configured prefix are invisible to selection. With prefix
+  # "release-", the greater v9.9.9 and every other v-tag are ignored and
+  # release-2.0.0 becomes the Sync Tag.
+  local upstream_release200
+  build_release_prefixed_upstream "$TEST_DIR"
+  upstream_release200=$(remote_sha "$FIX_UPSTREAM" refs/tags/release-2.0.0)
+  clone_fork_observer
+
+  run_entry_point '{"tag_prefix": "release-"}'
+  assert_rc 0 "$ENTRY_STATUS" "sync under a non-default prefix exits 0"
+  fetch_synced_base_branch
+
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: release-2.0.0" \
+    "the greatest prefix-matching tag wins"
+  assert_eq "$upstream_release200" "$(git -C "$OBSERVE" rev-parse refs/heads/after~2)" \
+    "the Own Commits are rebased onto the release-prefixed Sync Tag's commit"
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/release-2.0.0)" "$SYNCED_HEAD" \
+    "the Mark (release-2.0.0) points at the Fork's own head"
+  [ -z "$(remote_sha "$FIX_FORK" refs/tags/v9.9.9)" ] || {
+    printf 'FAIL a prefix-mismatched tag was Marked on the Fork\n'
+    return 1
+  }
+  assert_gh_not_called "a prefixed sync never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -360,7 +404,9 @@ TESTS=(
   test_prerelease_tags_are_skipped_by_default
   test_upstream_without_tags_fails_loudly
   test_prerelease_only_upstream_fails_loudly
+  test_upstream_without_matching_prefix_fails_loudly
   test_include_prereleases_tracks_greatest_prerelease
+  test_prefix_filters_tags_invisible_to_selection
   test_pure_fork_fast_forwards_to_sync_tag
 )
 

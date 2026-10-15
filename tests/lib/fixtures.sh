@@ -102,6 +102,21 @@ build_prerelease_only_upstream() { # <dir>
   rm -rf "$work"
 }
 
+# Release-prefix variant: adds release-2.0.0 at v1.3.2's commit plus a
+# greater but prefix-mismatched v9.9.9 at the Upstream's tip. Selection with
+# prefix "release-" must pick release-2.0.0 and be blind to every v-prefixed
+# tag, however great its version.
+build_release_prefixed_upstream() { # <dir>
+  local dir=$1
+  local work="$dir/variant-work"
+
+  git clone --quiet "$FIX_UPSTREAM" "$work"
+  git -C "$work" tag release-2.0.0 refs/tags/v1.3.2
+  git -C "$work" tag v9.9.9 refs/heads/main
+  git -C "$work" push --quiet "$FIX_UPSTREAM" refs/tags/release-2.0.0 refs/tags/v9.9.9
+  rm -rf "$work"
+}
+
 # Tagless variant: strips every tag from the Upstream — the configuration-
 # error shape of story 21 ("no tags at all"). A run must fail loudly instead
 # of silently skipping the Fork.
