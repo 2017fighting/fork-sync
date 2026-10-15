@@ -1,0 +1,211 @@
+# shellcheck shell=bash
+# Fixture builder for the per-Fork sync seam tests (spec issue #1, Testing
+# Decisions). Builds the canonical scenario over bare file:// remotes:
+#
+#   Upstream main = v1.3.2 + 4 commits, carrying older stable tags (v1.3.0,
+#   v1.3.1) and one newer prerelease tag (v1.4.0-rc.1), so Sync Tag selection
+#   must pick the greatest *stable* tag, not main's tip and not the prerelease.
+#
+#   Fork main = Upstream base + 2 Own Commits, carrying an inherited v1.3.2
+#   tag that still points at the Upstream's tagged commit (off the Fork's
+#   branch). The Fork forks at the Sync Tag's parent: with "v1.3.2 + 4
+#   commits" on main, forking later would leave the Sync Tag already inside
+#   the Fork's history and the rebase would never run.
+#
+# Commits use fixed authors, committers, and dates so every rebuild produces
+# byte-identical remotes.
+
+# Deterministic commit clock shared by every fixture builder: fixed authors,
+# committers, and dates so every rebuild produces byte-identical remotes.
+# Each builder resets it before its first commit.
+FIXTURE_DATE=1700000000
+
+fixture_commit() { # <work> <subject>
+  local work=$1 d=$FIXTURE_DATE
+  GIT_AUTHOR_NAME="Fixture Builder" \
+    GIT_AUTHOR_EMAIL="fixtures@fork-sync.invalid" \
+    GIT_AUTHOR_DATE="$d +0000" \
+    GIT_COMMITTER_NAME="Fixture Builder" \
+    GIT_COMMITTER_EMAIL="fixtures@fork-sync.invalid" \
+    GIT_COMMITTER_DATE="$d +0000" \
+    git -C "$work" commit --quiet --allow-empty -m "$2"
+  FIXTURE_DATE=$((d + 60))
+}
+
+build_canonical_scenario() {
+  local dir=$1
+  local work="$dir/fixture-work"
+  FIXTURE_DATE=1700000000
+
+  git -c init.defaultBranch=main init --quiet --bare "$dir/upstream.git"
+  git -c init.defaultBranch=main init --quiet --bare "$dir/fork.git"
+  git -c init.defaultBranch=main init --quiet "$work"
+
+  # Upstream main: v1.3.2 + 4 commits (u5..u8), stable and prerelease tags.
+  fixture_commit "$work" "Upstream: u1"
+  fixture_commit "$work" "Upstream: u2"; git -C "$work" tag v1.3.0
+  fixture_commit "$work" "Upstream: u3"; git -C "$work" tag v1.3.1
+  fixture_commit "$work" "Upstream: u4"; git -C "$work" tag v1.3.2
+  fixture_commit "$work" "Upstream: u5"
+  fixture_commit "$work" "Upstream: u6"
+  fixture_commit "$work" "Upstream: u7"
+  fixture_commit "$work" "Upstream: u8"; git -C "$work" tag v1.4.0-rc.1
+  git -C "$work" push --quiet "$dir/upstream.git" refs/heads/main
+  git -C "$work" push --quiet "$dir/upstream.git" --tags
+
+  # Fork main: forked at u3 (the Sync Tag's parent) + 2 Own Commits.
+  git -C "$work" checkout --quiet -b fork-main v1.3.1
+  fixture_commit "$work" "Fork: first Own Commit"
+  fixture_commit "$work" "Fork: second Own Commit"
+  git -C "$work" push --quiet "$dir/fork.git" fork-main:refs/heads/main
+  # Inherited Upstream tag, still pointing at the Upstream's tagged commit.
+  git -C "$work" push --quiet "$dir/fork.git" refs/tags/v1.3.2
+
+  rm -rf -- "$work"
+
+  # Consumed by the sourcing test runner.
+  # shellcheck disable=SC2034
+  FIX_UPSTREAM="file://$dir/upstream.git"
+  # shellcheck disable=SC2034
+  FIX_FORK="file://$dir/fork.git"
+}
+
+# build_conflict_scenario <dir> — the rebase-conflict variant of the canonical
+# scenario (spec issue #1, Testing Decisions): same Upstream shape, but the
+# Fork's single Own Commit edits the same line of the same file the Sync
+# Tag's commit (u4) edits, so rebase --onto conflicts instead of replaying
+# cleanly. Consumed by the conflict tests; sets FIX_UPSTREAM/FIX_FORK.
+build_conflict_scenario() {
+  local dir=$1
+  local work="$dir/conflict-work"
+  FIXTURE_DATE=1700000000
+
+  git -c init.defaultBranch=main init --quiet --bare "$dir/upstream.git"
+  git -c init.defaultBranch=main init --quiet --bare "$dir/fork.git"
+  git -c init.defaultBranch=main init --quiet "$work"
+
+  # Upstream main: v1.3.2 + 4 commits; u4 (the Sync Tag) rewrites line 1.
+  printf 'readme line 1: original\n' >"$work/readme"
+  git -C "$work" add readme
+  fixture_commit "$work" "Upstream: u1"
+  fixture_commit "$work" "Upstream: u2"
+  fixture_commit "$work" "Upstream: u3"; git -C "$work" tag v1.3.1
+  printf 'readme line 1: rewritten by the Upstream\n' >"$work/readme"
+  git -C "$work" add readme
+  fixture_commit "$work" "Upstream: u4"; git -C "$work" tag v1.3.2
+  fixture_commit "$work" "Upstream: u5"
+  fixture_commit "$work" "Upstream: u6"
+  fixture_commit "$work" "Upstream: u7"
+  fixture_commit "$work" "Upstream: u8"
+  git -C "$work" push --quiet "$dir/upstream.git" refs/heads/main
+  git -C "$work" push --quiet "$dir/upstream.git" --tags
+
+  # Fork main: forked at u3; the single Own Commit rewrites the same line,
+  # so replaying it onto u4 conflicts.
+  git -C "$work" checkout --quiet -b fork-main v1.3.1
+  printf 'readme line 1: rewritten by the Fork\n' >"$work/readme"
+  git -C "$work" add readme
+  fixture_commit "$work" "Fork: conflicting Own Commit"
+  git -C "$work" push --quiet "$dir/fork.git" fork-main:refs/heads/main
+  # Inherited Upstream tag, as in the canonical scenario.
+  git -C "$work" push --quiet "$dir/fork.git" refs/tags/v1.3.2
+
+  # The remotes must stand alone: drop the scratch checkout.
+  rm -rf -- "$work"
+
+  # Consumed by the sourcing test runner.
+  # shellcheck disable=SC2034
+  FIX_UPSTREAM="file://$dir/upstream.git"
+  # shellcheck disable=SC2034
+  FIX_FORK="file://$dir/fork.git"
+}
+
+# with_variant_work <dir> <body> — the scratch-clone lifecycle shared by every
+# variant builder: clone the canonical Upstream into the variant work tree, run
+# <body> against it (which mutates $FIX_UPSTREAM or $FIX_FORK through the
+# clone), then drop the tree. <body> is a function name, called with the work
+# tree's path.
+with_variant_work() { # <dir> <body>
+  local dir=$1 body=$2
+  local work="$dir/variant-work"
+  git clone --quiet "$FIX_UPSTREAM" "$work"
+  "$body" "$work"
+  rm -rf -- "$work"
+}
+
+# Already-contains variant (spec issue #1, "Forward-only gate"): rewrites the
+# canonical fixture's Fork so its main already contains the Sync Tag — forked
+# at the Upstream's tip (4 commits past v1.3.2) with 2 Own Commits on top,
+# still carrying the inherited v1.3.2 tag at the Upstream's commit. The sync
+# must leave that history untouched (a rebase --onto v1.3.2 would rewind the
+# post-tag Upstream commits out of the Fork) and only refresh the Mark.
+build_already_contains_scenario() { # <dir>
+  with_variant_work "$1" variant_already_contains
+}
+
+variant_already_contains() { # <work>
+  local work=$1
+  FIXTURE_DATE=1700010000
+  fixture_commit "$work" "Fork: first Own Commit"
+  fixture_commit "$work" "Fork: second Own Commit"
+  git -C "$work" push --quiet --force "$FIX_FORK" refs/heads/main:refs/heads/main
+}
+
+# Prerelease-only variant: strips the Upstream's stable tags, leaving only
+# v1.4.0-rc.1 — selection with default prerelease skipping must fail loudly
+# instead of silently skipping the Fork.
+build_prerelease_only_upstream() { # <dir>
+  with_variant_work "$1" variant_prerelease_only
+}
+
+variant_prerelease_only() { # <work>
+  local work=$1
+  git -C "$work" push --quiet "$FIX_UPSTREAM" \
+    :refs/tags/v1.3.0 :refs/tags/v1.3.1 :refs/tags/v1.3.2
+}
+
+# Release-prefix variant: adds release-2.0.0 at v1.3.2's commit plus a
+# greater but prefix-mismatched v9.9.9 at the Upstream's tip. Selection with
+# prefix "release-" must pick release-2.0.0 and be blind to every v-prefixed
+# tag, however great its version.
+build_release_prefixed_upstream() { # <dir>
+  with_variant_work "$1" variant_release_prefixed
+}
+
+variant_release_prefixed() { # <work>
+  local work=$1
+  git -C "$work" tag release-2.0.0 refs/tags/v1.3.2
+  git -C "$work" tag v9.9.9 refs/heads/main
+  git -C "$work" push --quiet "$FIX_UPSTREAM" refs/tags/release-2.0.0 refs/tags/v9.9.9
+}
+
+# Tagless variant: strips every tag from the Upstream — the configuration-
+# error shape of story 21 ("no tags at all"). A run must fail loudly instead
+# of silently skipping the Fork.
+build_tagless_upstream() { # <dir>
+  with_variant_work "$1" variant_tagless
+}
+
+variant_tagless() { # <work>
+  local work=$1 t
+  for t in $(git -C "$work" tag); do
+    git -C "$work" push --quiet "$FIX_UPSTREAM" ":refs/tags/$t"
+  done
+}
+
+# Pure-fork variant (spec issue #1, "Apply method"): rewrites the canonical
+# fixture's Fork into a zero-Own-Commits mirror — main at v1.3.1 (the Sync
+# Tag's parent), carrying only the tags that existed at fork time (v1.3.0,
+# v1.3.1, no inherited v1.3.2), so the fast-forwarded base branch and the
+# freshly created Mark are both observable.
+build_pure_fork_scenario() { # <dir>
+  with_variant_work "$1" variant_pure_fork
+}
+
+variant_pure_fork() { # <work>
+  local work=$1
+  git -C "$work" checkout --quiet -b fork-main refs/tags/v1.3.1
+  git -C "$work" push --quiet --force "$FIX_FORK" fork-main:refs/heads/main
+  git -C "$work" push --quiet "$FIX_FORK" \
+    refs/tags/v1.3.0 refs/tags/v1.3.1 :refs/tags/v1.3.2
+}

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fake gh injected via PATH for seam tests (spec issue #1, Testing Decisions):
+# records every invocation so tests can assert the notification dependency was
+# called with the expected arguments — and, on non-conflict runs, not at all.
+#
+# Contract:
+#   - $GH_SPY_LOG (required): one line per invocation, all arguments joined by
+#     single spaces (multi-line bodies appear verbatim in the log).
+#   - `gh issue list ...` prints the contents of $GH_FAKE_ISSUE_LIST when that
+#     file exists, else `[]` — tests stage the open-issue state there to drive
+#     the create-vs-comment behavior under test.
+#   - Every invocation exits 0.
+printf '%s\n' "$*" >>"${GH_SPY_LOG:-/dev/null}"
+if [ "${1:-}" = issue ] && [ "${2:-}" = list ]; then
+  if [ -n "${GH_FAKE_ISSUE_LIST:-}" ] && [ -f "$GH_FAKE_ISSUE_LIST" ]; then
+    cat "$GH_FAKE_ISSUE_LIST"
+  else
+    printf '[]\n'
+  fi
+fi
+exit 0

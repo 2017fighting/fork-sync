@@ -1,0 +1,5 @@
+# Source tree, not build output: re-include against venv-style global
+# ignores ([Ss]cripts, [Bb]in, [Ll]ib) that would hide these from git add.
+!scripts/
+!tests/bin/
+!tests/lib/

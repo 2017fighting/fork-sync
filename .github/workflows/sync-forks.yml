@@ -1,0 +1,83 @@
+# Sync every Fork declared in forks.yml onto its Upstream's Sync Tag (spec
+# issue #1; deployment guide: docs/deploying.md).
+#
+# Shape: the setup job parses the manifest once (Python/PyYAML, preinstalled
+# on the runner) into a JSON array of per-Fork configs and exports it as the
+# matrix; the sync job expands over that array with fail-fast disabled, so
+# one Fork's failure never blocks another and each Fork reports its own
+# status row (named after the Fork's URL).
+#
+# Credentials: cross-repo pushes authenticate with the FORK_SYNC_PAT secret
+# ONLY (a fine-grained PAT with Contents: Read/Write on every Fork) — the
+# workflow's own GITHUB_TOKEN can push nothing across repos and is used
+# solely, via gh (GH_TOKEN), to file and comment on conflict issues on this
+# repo (permissions: issues: write). The entry script itself stays
+# credential-agnostic; the PAT is wired in as a git http extraheader here.
+---
+name: Sync Forks
+
+on:
+  schedule:
+    # Daily at 04:17 UTC — off the whole hour to avoid the cron crowd.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Parse the manifest
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate forks.yml and emit the per-Fork matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          matrix=$(python3 scripts/manifest-to-matrix.py forks.yml)
+          printf 'matrix=%s\n' "$matrix" >>"$GITHUB_OUTPUT"
+
+  # One job per Fork. An empty matrix (forks: []) skips this job instead of
+  # failing the run (GitHub Actions, since 2022).
+  sync:
+    name: sync ${{ matrix.fork.fork }}
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      # One Fork's failure must never cancel or block another (story 19).
+      fail-fast: false
+      matrix:
+        fork: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Sync one Fork
+        env:
+          # Conflict issues are filed on this central repo via gh; pushes
+          # never use this token (gh only).
+          FORK_SYNC_CENTER_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          # Pushes authenticate with this fine-grained PAT only.
+          FORK_SYNC_PAT: ${{ secrets.FORK_SYNC_PAT }}
+          FORK_CONFIG: ${{ toJSON(matrix.fork) }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FORK_SYNC_PAT" ]; then
+            echo "::error::the FORK_SYNC_PAT secret is not set" \
+              "— see docs/deploying.md"
+            exit 1
+          fi
+          # Wire the PAT in as the git credential for every push to
+          # github.com the sync makes (branch + Mark tag). Applies to the
+          # sync's clones via the global config; sync-fork.sh itself never
+          # sees a credential. base64 -w0: fine-grained PATs are long enough
+          # that wrapped base64 would break the header.
+          auth=$(printf 'x-access-token:%s' "$FORK_SYNC_PAT" | base64 -w0)
+          git config --global http.https://github.com/.extraheader \
+            "Authorization: Basic $auth"
+          scripts/sync-fork.sh "$FORK_CONFIG"
