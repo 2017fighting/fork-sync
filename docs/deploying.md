@@ -21,7 +21,8 @@ defaults:
 forks:
   - fork: "https://github.com/you/your-fork.git"        # required
     upstream: "https://github.com/original/project.git" # required
-    base_branch: "main"                                 # required
+    base_branch: "main"                                 # required; must exist
+                                                        # on the Fork
     # optional overrides of the defaults, per Fork:
     # tag_prefix: "release-"
     # forward_only: false        # strict tag sync: may rewind post-tag

@@ -393,6 +393,26 @@ test_upstream_without_tags_fails_loudly() {
   assert_gh_not_called "a configuration error never notifies"
 }
 
+test_missing_fork_base_branch_fails_loudly() {
+  # Story 21: a base_branch the Fork does not have is a configuration error.
+  # Unguarded, it surfaces as git's "ambiguous argument
+  # 'refs/remotes/fork/<branch>'" (exit 128), which names neither the cause
+  # nor the remedy — so the run must say which branch is missing and which
+  # ones the Fork actually has, and must still touch nothing.
+  local fork_refs
+  fork_refs=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point '{"base_branch": "trunk"}'
+  assert_rc 1 "$ENTRY_STATUS" "a missing base branch fails the run"
+  assert_contains "$ENTRY_OUTPUT" "no branch 'trunk'" \
+    "the configuration error names the missing base branch"
+  assert_contains "$ENTRY_OUTPUT" "main" \
+    "the configuration error lists the branches the Fork does have"
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_refs" \
+    "the failed run leaves the Fork untouched"
+  assert_gh_not_called "a configuration error never notifies"
+}
+
 test_prerelease_only_upstream_fails_loudly() {
   # With prerelease skipping on (the default), an Upstream offering only
   # prereleases must fail the run — never silently skip the Fork — with a
@@ -489,6 +509,7 @@ TESTS=(
   test_include_prereleases_tracks_greatest_prerelease
   test_prefix_filters_tags_invisible_to_selection
   test_pure_fork_fast_forwards_to_sync_tag
+  test_missing_fork_base_branch_fails_loudly
 )
 
 # Conflict-path tests run against the rebase-conflict fixture variant.

@@ -9,7 +9,10 @@
 #
 #   Each Fork entry:
 #     fork, upstream, base_branch   — required, non-empty strings (the two
-#                                     remote URLs and the Fork's branch).
+#                                     remote URLs and the Fork's branch). The
+#                                     base branch must exist on the Fork; if
+#                                     it doesn't, the run names the branches
+#                                     the Fork does have and stops.
 #     tag_prefix                    — optional, string (default "v"); "" makes
 #                                     every semver tag match.
 #     forward_only                  — optional, boolean (default true); false

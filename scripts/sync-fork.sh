@@ -258,7 +258,20 @@ main() {
 
   local sync_commit fork_base_sha merge_base
   sync_commit=$("${git[@]}" -C "$work" rev-parse "refs/tags/$sync_tag^{commit}")
-  fork_base_sha=$("${git[@]}" -C "$work" rev-parse "refs/remotes/fork/$base_branch")
+  # The configured base branch must exist on the Fork. Unguarded, a wrong
+  # base_branch (a Fork whose default branch is simply named differently, or
+  # a typo) surfaces as git's "ambiguous argument
+  # 'refs/remotes/fork/<branch>'" and exit 128 — a crash that names neither
+  # the cause nor the fix. Name the branch and the alternatives instead.
+  if ! fork_base_sha=$("${git[@]}" -C "$work" rev-parse --verify --quiet \
+    "refs/remotes/fork/$base_branch"); then
+    local fork_branches
+    fork_branches=$("${git[@]}" -C "$work" for-each-ref \
+      --format='%(refname:strip=3)' refs/remotes/fork |
+      grep -v '^HEAD$' | paste -sd, -)
+    die "the Fork has no branch '$base_branch' (base_branch in the manifest);" \
+      "the Fork's branches are: ${fork_branches:-none}"
+  fi
   merge_base=$("${git[@]}" -C "$work" merge-base \
     "refs/remotes/fork/$base_branch" "refs/remotes/upstream/$default_branch")
 
