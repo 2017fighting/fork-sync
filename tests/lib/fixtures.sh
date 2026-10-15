@@ -120,6 +120,19 @@ build_conflict_scenario() {
   FIX_FORK="file://$dir/fork.git"
 }
 
+# with_variant_work <dir> <body> — the scratch-clone lifecycle shared by every
+# variant builder: clone the canonical Upstream into the variant work tree, run
+# <body> against it (which mutates $FIX_UPSTREAM or $FIX_FORK through the
+# clone), then drop the tree. <body> is a function name, called with the work
+# tree's path.
+with_variant_work() { # <dir> <body>
+  local dir=$1 body=$2
+  local work="$dir/variant-work"
+  git clone --quiet "$FIX_UPSTREAM" "$work"
+  "$body" "$work"
+  rm -rf -- "$work"
+}
+
 # Already-contains variant (spec issue #1, "Forward-only gate"): rewrites the
 # canonical fixture's Fork so its main already contains the Sync Tag — forked
 # at the Upstream's tip (4 commits past v1.3.2) with 2 Own Commits on top,
@@ -127,28 +140,28 @@ build_conflict_scenario() {
 # must leave that history untouched (a rebase --onto v1.3.2 would rewind the
 # post-tag Upstream commits out of the Fork) and only refresh the Mark.
 build_already_contains_scenario() { # <dir>
-  local dir=$1
-  local work="$dir/variant-work"
-  FIXTURE_DATE=1700010000
+  with_variant_work "$1" variant_already_contains
+}
 
-  git clone --quiet "$FIX_UPSTREAM" "$work"
+variant_already_contains() { # <work>
+  local work=$1
+  FIXTURE_DATE=1700010000
   fixture_commit "$work" "Fork: first Own Commit"
   fixture_commit "$work" "Fork: second Own Commit"
   git -C "$work" push --quiet --force "$FIX_FORK" refs/heads/main:refs/heads/main
-  rm -rf "$work"
 }
 
 # Prerelease-only variant: strips the Upstream's stable tags, leaving only
 # v1.4.0-rc.1 — selection with default prerelease skipping must fail loudly
 # instead of silently skipping the Fork.
 build_prerelease_only_upstream() { # <dir>
-  local dir=$1
-  local work="$dir/variant-work"
+  with_variant_work "$1" variant_prerelease_only
+}
 
-  git clone --quiet "$FIX_UPSTREAM" "$work"
+variant_prerelease_only() { # <work>
+  local work=$1
   git -C "$work" push --quiet "$FIX_UPSTREAM" \
     :refs/tags/v1.3.0 :refs/tags/v1.3.1 :refs/tags/v1.3.2
-  rm -rf "$work"
 }
 
 # Release-prefix variant: adds release-2.0.0 at v1.3.2's commit plus a
@@ -156,27 +169,28 @@ build_prerelease_only_upstream() { # <dir>
 # prefix "release-" must pick release-2.0.0 and be blind to every v-prefixed
 # tag, however great its version.
 build_release_prefixed_upstream() { # <dir>
-  local dir=$1
-  local work="$dir/variant-work"
+  with_variant_work "$1" variant_release_prefixed
+}
 
-  git clone --quiet "$FIX_UPSTREAM" "$work"
+variant_release_prefixed() { # <work>
+  local work=$1
   git -C "$work" tag release-2.0.0 refs/tags/v1.3.2
   git -C "$work" tag v9.9.9 refs/heads/main
   git -C "$work" push --quiet "$FIX_UPSTREAM" refs/tags/release-2.0.0 refs/tags/v9.9.9
-  rm -rf "$work"
 }
 
 # Tagless variant: strips every tag from the Upstream — the configuration-
 # error shape of story 21 ("no tags at all"). A run must fail loudly instead
 # of silently skipping the Fork.
 build_tagless_upstream() { # <dir>
-  local dir=$1 t
-  local work="$dir/variant-work"
-  git clone --quiet "$FIX_UPSTREAM" "$work"
+  with_variant_work "$1" variant_tagless
+}
+
+variant_tagless() { # <work>
+  local work=$1 t
   for t in $(git -C "$work" tag); do
     git -C "$work" push --quiet "$FIX_UPSTREAM" ":refs/tags/$t"
   done
-  rm -rf "$work"
 }
 
 # Pure-fork variant (spec issue #1, "Apply method"): rewrites the canonical
@@ -185,13 +199,13 @@ build_tagless_upstream() { # <dir>
 # v1.3.1, no inherited v1.3.2), so the fast-forwarded base branch and the
 # freshly created Mark are both observable.
 build_pure_fork_scenario() { # <dir>
-  local dir=$1
-  local work="$dir/variant-work"
+  with_variant_work "$1" variant_pure_fork
+}
 
-  git clone --quiet "$FIX_UPSTREAM" "$work"
+variant_pure_fork() { # <work>
+  local work=$1
   git -C "$work" checkout --quiet -b fork-main refs/tags/v1.3.1
   git -C "$work" push --quiet --force "$FIX_FORK" fork-main:refs/heads/main
   git -C "$work" push --quiet "$FIX_FORK" \
     refs/tags/v1.3.0 refs/tags/v1.3.1 :refs/tags/v1.3.2
-  rm -rf "$work"
 }
