@@ -176,6 +176,16 @@ test_conflict_aborts_all_fork_mutations_and_exits_nonzero() {
     "a conflicted run leaves the Fork's branches and tags byte-identical"
 }
 
+test_conflict_output_names_fork_sync_tag_and_conflicting_own_commits() {
+  run_entry_point
+  assert_contains "$ENTRY_OUTPUT" "$FIX_FORK" \
+    "the conflict report identifies the Fork"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the conflict report identifies the Sync Tag"
+  assert_contains "$ENTRY_OUTPUT" "Fork: conflicting Own Commit" \
+    "the conflict report identifies the conflicting Own Commit"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -186,6 +196,7 @@ TESTS=(
 # Conflict-path tests run against the rebase-conflict fixture variant.
 CONFLICT_TESTS=(
   test_conflict_aborts_all_fork_mutations_and_exits_nonzero
+  test_conflict_output_names_fork_sync_tag_and_conflicting_own_commits
 )
 
 # builder_for <test-name> — the fixture variant a test runs against (the

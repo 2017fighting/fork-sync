@@ -53,6 +53,41 @@ select_sync_tag() {
   printf '%s%s\n' "$prefix" "$best"
 }
 
+# conflicting_own_commits <work> <rebase_output> — prints one
+# "<sha> <subject>" line per Own Commit the failed rebase stopped on, taken
+# from git's own "could not apply <sha>... <subject>" lines (both the
+# "error: "-prefixed form and the trailing summary form).
+conflicting_own_commits() {
+  local work=$1 rebase_output=$2 short subject sha
+  while IFS=$'\t' read -r short subject; do
+    [ -n "$short" ] || continue
+    sha=$("${git[@]}" -C "$work" rev-parse --quiet --verify "$short^{commit}") ||
+      sha=$short
+    printf '%s %s\n' "$sha" "$subject"
+  done < <(printf '%s\n' "$rebase_output" |
+    sed -n 's/^\(error: \)\{0,1\}[Cc]ould not apply \([0-9a-f]\{7,\}\)\.\.\. \(#\{0,1\} \)\{0,1\}\(.*\)$/\2\t\4/p' |
+    awk -F'\t' '!seen[$1]++')
+}
+
+# report_rebase_conflict <fork_url> <sync_tag> <work> <rebase_output> — the
+# rebase of the Own Commits failed (a content conflict, in practice: the
+# rebase runs on already-fetched objects). Aborting needs no undoing: the
+# Fork remote is only ever mutated by the pushes after a successful rebase,
+# so a failure here means simply not pushing. Reports what conflicted and
+# exits non-zero. Never returns.
+report_rebase_conflict() {
+  local fork_url=$1 sync_tag=$2 work=$3 rebase_output=$4 commit
+  printf 'sync-fork: CONFLICT rebasing Own Commits; aborted\n' >&2
+  printf 'sync-fork:   Fork: %s\n' "$fork_url" >&2
+  printf 'sync-fork:   Sync Tag: %s\n' "$sync_tag" >&2
+  printf 'sync-fork:   conflicting Own Commits:\n' >&2
+  while IFS= read -r commit; do
+    printf 'sync-fork:     %s\n' "$commit" >&2
+  done < <(conflicting_own_commits "$work" "$rebase_output")
+  printf 'sync-fork:   the Fork is untouched (no branch or tag moved)\n' >&2
+  exit 1
+}
+
 # upstream_default_branch <upstream_url> — Own Commits are defined against the
 # Upstream's default branch.
 upstream_default_branch() {
@@ -107,7 +142,12 @@ main() {
   fi
 
   "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
-  "${git[@]}" -C "$work" rebase --onto "$sync_commit" "$merge_base" "$base_branch"
+  local rebase_output
+  if ! rebase_output=$("${git[@]}" -C "$work" rebase --onto "$sync_commit" \
+    "$merge_base" "$base_branch" 2>&1); then
+    report_rebase_conflict "$fork_url" "$sync_tag" "$work" "$rebase_output"
+  fi
+  printf '%s\n' "$rebase_output" >&2
 
   local new_head
   new_head=$("${git[@]}" -C "$work" rev-parse "refs/heads/$base_branch")
