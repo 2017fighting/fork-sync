@@ -41,15 +41,17 @@ die() {
 # config still governs everything the sync does not create.
 git=(git -c commit.gpgSign=false -c tag.gpgSign=false)
 
-# select_sync_tag <upstream_url> <tag_prefix> — prints the Sync Tag's name.
-# Among the Upstream's tags matching the prefix, the greatest by semver
-# precedence; prereleases (e.g. v1.4.0-rc.1) and non-semver names are
-# ignored. Failing, exits with a code naming the configuration error:
+# select_sync_tag <upstream_url> <tag_prefix> <include_prereleases> — prints
+# the Sync Tag's name. Among the Upstream's tags matching the prefix, the
+# greatest by semver precedence; prereleases (e.g. v1.4.0-rc.1) are skipped
+# unless include_prereleases is true; non-semver names are always ignored.
+# Failing, exits with a code naming the configuration error:
 #   1 — the Upstream has no tags at all;
-#   2 — only prerelease tags matched the prefix (skipped by default);
+#   2 — only prerelease tags matched the prefix (skipped unless included);
 #   3 — no tag matched the prefix at all.
 select_sync_tag() {
-  local upstream_url=$1 prefix=$2 name version best=""
+  local upstream_url=$1 prefix=$2 include_prereleases=$3
+  local name version version_ok best=""
   local saw_tag=false saw_prerelease=false
   while IFS=$'\t' read -r _sha ref; do
     name=${ref#refs/tags/}
@@ -59,14 +61,21 @@ select_sync_tag() {
     saw_tag=true
     [ "${name#"$prefix"}" != "$name" ] || continue
     version=${name#"$prefix"}
+    version_ok=false
     if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      version_ok=true
+    elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
+      saw_prerelease=true
+      if [ "$include_prereleases" = true ]; then
+        version_ok=true
+      fi
+    fi # anything else: non-semver names never qualify
+    if [ "$version_ok" = true ]; then
       if [ -z "$best" ] ||
         [ "$(printf '%s\n%s\n' "$best" "$version" | sort -V | tail -n 1)" = "$version" ]; then
         best=$version
       fi
-    elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
-      saw_prerelease=true
-    fi # anything else: non-semver names never qualify
+    fi
   done < <(git ls-remote --tags "$upstream_url")
   if [ -n "$best" ]; then
     printf '%s%s\n' "$prefix" "$best"
@@ -110,12 +119,18 @@ main() {
     die "config: .forward_only must be a boolean"
   forward_only=$(jq -r 'if .forward_only == null then true
                         else .forward_only end' <<<"$config")
+  jq -e 'if .include_prereleases == null then true
+         else (.include_prereleases | type == "boolean") end' <<<"$config" >/dev/null ||
+    die "config: .include_prereleases must be a boolean"
+  include_prereleases=$(jq -r 'if .include_prereleases == null then false
+                               else .include_prereleases end' <<<"$config")
 
   local sync_tag select_rc=0
-  sync_tag=$(select_sync_tag "$upstream_url" "$tag_prefix") || select_rc=$?
+  sync_tag=$(select_sync_tag "$upstream_url" "$tag_prefix" "$include_prereleases") ||
+    select_rc=$?
   case "$select_rc" in
     1) die "the Upstream has no tags at all: cannot select a Sync Tag" ;;
-    2) die "the Upstream's only tags matching prefix '$tag_prefix' are prereleases, which are skipped by default" ;;
+    2) die "the Upstream's only tags matching prefix '$tag_prefix' are prereleases, which are skipped by default; set include_prereleases: true to track them" ;;
     3) die "no stable tag with prefix '$tag_prefix' on the Upstream" ;;
   esac
 

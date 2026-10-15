@@ -329,6 +329,26 @@ test_prerelease_only_upstream_fails_loudly() {
   assert_gh_not_called "a policy failure never notifies"
 }
 
+test_include_prereleases_tracks_greatest_prerelease() {
+  # With inclusion enabled, the greatest prerelease may win selection (spec
+  # story 7's configurable flip side): v1.4.0-rc.1 beats the stable v1.3.2.
+  local upstream_rc1
+  upstream_rc1=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.4.0-rc.1)
+  clone_fork_observer
+
+  run_entry_point '{"include_prereleases": true}'
+  assert_rc 0 "$ENTRY_STATUS" "sync onto a chosen prerelease exits 0"
+  fetch_synced_base_branch
+
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.4.0-rc.1" \
+    "the greatest prerelease wins selection when included"
+  assert_eq "$upstream_rc1" "$(git -C "$OBSERVE" rev-parse refs/heads/after~2)" \
+    "the Own Commits are rebased onto the prerelease's commit"
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.4.0-rc.1)" "$SYNCED_HEAD" \
+    "the Mark (v1.4.0-rc.1) points at the Fork's own head"
+  assert_gh_not_called "a prerelease sync never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -340,6 +360,7 @@ TESTS=(
   test_prerelease_tags_are_skipped_by_default
   test_upstream_without_tags_fails_loudly
   test_prerelease_only_upstream_fails_loudly
+  test_include_prereleases_tracks_greatest_prerelease
   test_pure_fork_fast_forwards_to_sync_tag
 )
 
