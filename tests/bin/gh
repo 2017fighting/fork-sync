@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake gh injected via PATH for seam tests (spec issue #1, Testing Decisions):
+# records every invocation so tests can assert the notification dependency was
+# called with the expected arguments — and, on non-conflict runs, not at all.
+# The real notification step arrives with a later ticket.
+printf '%s\n' "$*" >>"${GH_SPY_LOG:-/dev/null}"
+exit 0
