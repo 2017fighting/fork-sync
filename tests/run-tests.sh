@@ -295,6 +295,23 @@ test_prerelease_tags_are_skipped_by_default() {
   assert_gh_not_called "a stable sync never notifies"
 }
 
+test_upstream_without_tags_fails_loudly() {
+  # Story 21: an Upstream with no tags at all is a configuration error. The
+  # run must fail with a distinct message (not the prerelease-only failure)
+  # and touch neither remote.
+  local fork_refs
+  build_tagless_upstream "$TEST_DIR"
+  fork_refs=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point
+  assert_rc 1 "$ENTRY_STATUS" "a tagless Upstream fails the run"
+  assert_contains "$ENTRY_OUTPUT" "no tags at all" \
+    "the configuration error is named precisely"
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_refs" \
+    "the failed run leaves the Fork untouched"
+  assert_gh_not_called "a configuration error never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -304,6 +321,7 @@ TESTS=(
   test_already_contains_refreshes_mark_leaving_history_untouched
   test_strict_mode_rewinds_post_tag_upstream_commits
   test_prerelease_tags_are_skipped_by_default
+  test_upstream_without_tags_fails_loudly
   test_pure_fork_fast_forwards_to_sync_tag
 )
 

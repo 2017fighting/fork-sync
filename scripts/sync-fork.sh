@@ -43,24 +43,42 @@ git=(git -c commit.gpgSign=false -c tag.gpgSign=false)
 
 # select_sync_tag <upstream_url> <tag_prefix> — prints the Sync Tag's name.
 # Among the Upstream's tags matching the prefix, the greatest by semver
-# precedence; prereleases (e.g. v1.4.0-rc.1) and non-semver names are ignored.
+# precedence; prereleases (e.g. v1.4.0-rc.1) and non-semver names are
+# ignored. Failing, exits with a code naming the configuration error:
+#   1 — the Upstream has no tags at all;
+#   2 — only prerelease tags matched the prefix (skipped by default);
+#   3 — no tag matched the prefix at all.
 select_sync_tag() {
   local upstream_url=$1 prefix=$2 name version best=""
+  local saw_tag=false saw_prerelease=false
   while IFS=$'\t' read -r _sha ref; do
     name=${ref#refs/tags/}
     case "$name" in
       *'^{}') continue ;; # annotated tag peel lines
     esac
+    saw_tag=true
     [ "${name#"$prefix"}" != "$name" ] || continue
     version=${name#"$prefix"}
-    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
-    if [ -z "$best" ] ||
-      [ "$(printf '%s\n%s\n' "$best" "$version" | sort -V | tail -n 1)" = "$version" ]; then
-      best=$version
-    fi
+    if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      if [ -z "$best" ] ||
+        [ "$(printf '%s\n%s\n' "$best" "$version" | sort -V | tail -n 1)" = "$version" ]; then
+        best=$version
+      fi
+    elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
+      saw_prerelease=true
+    fi # anything else: non-semver names never qualify
   done < <(git ls-remote --tags "$upstream_url")
-  [ -n "$best" ] || return 1
-  printf '%s%s\n' "$prefix" "$best"
+  if [ -n "$best" ]; then
+    printf '%s%s\n' "$prefix" "$best"
+    return 0
+  fi
+  if [ "$saw_tag" = false ]; then
+    return 1
+  fi
+  if [ "$saw_prerelease" = true ]; then
+    return 2
+  fi
+  return 3
 }
 
 # upstream_default_branch <upstream_url> — Own Commits are defined against the
@@ -93,9 +111,13 @@ main() {
   forward_only=$(jq -r 'if .forward_only == null then true
                         else .forward_only end' <<<"$config")
 
-  local sync_tag
-  sync_tag=$(select_sync_tag "$upstream_url" "$tag_prefix") ||
-    die "no stable tag with prefix '$tag_prefix' on the Upstream"
+  local sync_tag select_rc=0
+  sync_tag=$(select_sync_tag "$upstream_url" "$tag_prefix") || select_rc=$?
+  case "$select_rc" in
+    1) die "the Upstream has no tags at all: cannot select a Sync Tag" ;;
+    2) die "the Upstream's only tags matching prefix '$tag_prefix' are prereleases, which are skipped by default" ;;
+    3) die "no stable tag with prefix '$tag_prefix' on the Upstream" ;;
+  esac
 
   local default_branch
   default_branch=$(upstream_default_branch "$upstream_url") ||

@@ -89,6 +89,19 @@ build_already_contains_scenario() { # <dir>
   rm -rf "$work"
 }
 
+# Tagless variant: strips every tag from the Upstream — the configuration-
+# error shape of story 21 ("no tags at all"). A run must fail loudly instead
+# of silently skipping the Fork.
+build_tagless_upstream() { # <dir>
+  local dir=$1 t
+  local work="$dir/variant-work"
+  git clone --quiet "$FIX_UPSTREAM" "$work"
+  for t in $(git -C "$work" tag); do
+    git -C "$work" push --quiet "$FIX_UPSTREAM" ":refs/tags/$t"
+  done
+  rm -rf "$work"
+}
+
 # Pure-fork variant (spec issue #1, "Apply method"): rewrites the canonical
 # fixture's Fork into a zero-Own-Commits mirror — main at v1.3.1 (the Sync
 # Tag's parent), carrying only the tags that existed at fork time (v1.3.0,
