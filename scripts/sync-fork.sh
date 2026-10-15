@@ -49,6 +49,22 @@ die() {
 # config still governs everything the sync does not create.
 git=(git -c commit.gpgSign=false -c tag.gpgSign=false)
 
+# read_bool_field <config> <field> <default> — prints the field's boolean
+# value. jq's `//` treats false like null, so it is never used here: a bare
+# `.forward_only // true` would turn a configured false back into true. A
+# missing/null field takes <default>; a present value must be a boolean or
+# the read fails.
+read_bool_field() {
+  local config=$1 field=$2 default=$3 value
+  value=$(jq -r --arg field "$field" --argjson default "$default" \
+    '.[$field] as $v |
+     if $v == null then $default
+     elif ($v | type) == "boolean" then $v
+     else empty end' <<<"$config")
+  [ -n "$value" ] || die "config: .$field must be a boolean"
+  printf '%s' "$value"
+}
+
 # select_sync_tag <upstream_url> <tag_prefix> <include_prereleases> — prints
 # the Sync Tag's name. Among the Upstream's tags matching the prefix, the
 # greatest by semver precedence; prereleases (e.g. v1.4.0-rc.1) are skipped
@@ -214,19 +230,8 @@ main() {
   base_branch=$(jq -er '.base_branch | strings' <<<"$config") ||
     die "config: .base_branch must be a string"
   tag_prefix=$(jq -r '.tag_prefix // "v"' <<<"$config")
-  # jq's `//` treats false like null, so boolean fields are read with an
-  # explicit null check: a bare `.forward_only // true` would turn a
-  # configured false back into true.
-  jq -e 'if .forward_only == null then true
-         else (.forward_only | type == "boolean") end' <<<"$config" >/dev/null ||
-    die "config: .forward_only must be a boolean"
-  forward_only=$(jq -r 'if .forward_only == null then true
-                        else .forward_only end' <<<"$config")
-  jq -e 'if .include_prereleases == null then true
-         else (.include_prereleases | type == "boolean") end' <<<"$config" >/dev/null ||
-    die "config: .include_prereleases must be a boolean"
-  include_prereleases=$(jq -r 'if .include_prereleases == null then false
-                               else .include_prereleases end' <<<"$config")
+  forward_only=$(read_bool_field "$config" forward_only true)
+  include_prereleases=$(read_bool_field "$config" include_prereleases false)
 
   local sync_tag select_rc=0
   sync_tag=$(select_sync_tag "$upstream_url" "$tag_prefix" "$include_prereleases") ||
