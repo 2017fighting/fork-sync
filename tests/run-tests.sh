@@ -114,8 +114,36 @@ test_syncs_fork_onto_sync_tag_with_rebased_own_commits() {
   fi
 }
 
+test_marks_fork_head_by_force_moving_inherited_tag() {
+  local upstream_v132
+  upstream_v132=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.2)
+  clone_fork_observer
+
+  # Precondition: the Fork inherits v1.3.2 pointing at the Upstream's tagged
+  # commit, which is not on the Fork's main.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$upstream_v132" \
+    "the Fork starts with an inherited v1.3.2 tag at the Upstream commit"
+  if git -C "$OBSERVE" merge-base --is-ancestor "$upstream_v132" refs/heads/main; then
+    printf 'FAIL fixture: the inherited tag target is already on the Fork main\n'
+    return 1
+  fi
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "sync exits 0"
+  fetch_synced_base_branch
+
+  # The Mark: the same tag name now points at the Fork's own head.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$SYNCED_HEAD" \
+    "the Mark (v1.3.2) points at the Fork's own head"
+  [ "$SYNCED_HEAD" != "$upstream_v132" ] || {
+    printf 'FAIL the Mark was not moved off the Upstream commit\n'
+    return 1
+  }
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
+  test_marks_fork_head_by_force_moving_inherited_tag
 )
 
 run_test() {

@@ -115,6 +115,11 @@ main() {
   "${git[@]}" -C "$work" push --quiet \
     --force-with-lease="refs/heads/$base_branch:$fork_base_sha" \
     fork "refs/heads/$base_branch"
+
+  # Mark the Fork: a tag of the Sync Tag's name pointing at the Fork's own
+  # head, force-moving an inherited Upstream tag of that name (ADR-0001).
+  "${git[@]}" -C "$work" tag --force "$sync_tag" "$new_head"
+  "${git[@]}" -C "$work" push --quiet --force fork "refs/tags/$sync_tag"
 }
 
 main "$@"
