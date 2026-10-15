@@ -81,11 +81,58 @@ report_rebase_conflict() {
   printf 'sync-fork:   Fork: %s\n' "$fork_url" >&2
   printf 'sync-fork:   Sync Tag: %s\n' "$sync_tag" >&2
   printf 'sync-fork:   conflicting Own Commits:\n' >&2
+  local conflicts=""
   while IFS= read -r commit; do
     printf 'sync-fork:     %s\n' "$commit" >&2
+    conflicts+="$commit"$'\n'
   done < <(conflicting_own_commits "$work" "$rebase_output")
   printf 'sync-fork:   the Fork is untouched (no branch or tag moved)\n' >&2
+  notify_conflict "$fork_url" "$sync_tag" "$conflicts"
   exit 1
+}
+
+# conflict_issue_body <fork_url> <sync_tag> <conflicts> — the issue text:
+# what aborted, which Own Commits conflicted, and the remedy (resolve
+# manually, push, Mark, close).
+conflict_issue_body() {
+  local fork_url=$1 sync_tag=$2 conflicts=$3
+  printf 'The automated sync of the Fork %s onto the Upstream Sync Tag %s\n' \
+    "$fork_url" "$sync_tag"
+  printf "was aborted: rebasing the Fork's Own Commits onto the tag hit a\n"
+  printf 'conflict. The Fork is untouched — no branch and no tag was moved.\n'
+  if [ -n "$conflicts" ]; then
+    printf '\nConflicting Own Commits:\n'
+    printf '%s' "$conflicts" | sed 's/^/  /'
+  fi
+  printf '\nRemedy (manual resolution):\n'
+  printf '  1. Clone the Fork %s and add its Upstream as remote "upstream".\n' "$fork_url"
+  printf "  2. Fetch the Upstream's tags: git fetch upstream --tags\n"
+  printf "  3. Rebase the Fork's Own Commits onto the Sync Tag, resolving conflicts:\n"
+  # The $(...) below is literal guidance for the human resolving by hand.
+  # shellcheck disable=SC2016
+  printf '       git rebase --onto refs/tags/%s "$(git merge-base main upstream/HEAD)" main\n' \
+    "$sync_tag"
+  printf '  4. Push the result: git push --force-with-lease origin main\n'
+  printf '  5. Mark the Fork: git tag --force %s main && git push --force origin refs/tags/%s\n' \
+    "$sync_tag" "$sync_tag"
+  printf '  6. Close this issue; the next run will treat the Fork as synced.\n'
+}
+
+# notify_conflict <fork_url> <sync_tag> <conflicts> — the notification step
+# (spec issue #1, Conflict handling): file an issue on the central
+# management repo titled after the Fork and the Sync Tag, with remedy steps.
+# The repo is FORK_SYNC_CENTER_REPO (owner/name), injectable so tests run
+# against the fake gh; the workflow wires the real value (ticket #6).
+notify_conflict() {
+  local fork_url=$1 sync_tag=$2 conflicts=$3
+  local center title body
+  center=${FORK_SYNC_CENTER_REPO:-}
+  [ -n "$center" ] ||
+    die "FORK_SYNC_CENTER_REPO (owner/name of the central management repo) is unset: cannot file the conflict issue"
+  title="fork-sync conflict: $fork_url onto $sync_tag"
+  body=$(conflict_issue_body "$fork_url" "$sync_tag" "$conflicts")
+  gh issue create --repo "$center" --title "$title" --body "$body"
+  printf 'sync-fork: conflict filed as a new issue on %s\n' "$center" >&2
 }
 
 # upstream_default_branch <upstream_url> — Own Commits are defined against the

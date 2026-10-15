@@ -42,6 +42,15 @@ assert_contains() { # haystack needle label
   return 1
 }
 
+assert_not_contains() { # haystack needle label
+  case "$1" in
+    *"$2"*)
+      printf 'FAIL %s: output unexpectedly contained "%s"\n  output: %s\n' "$3" "$2" "$1"
+      return 1
+      ;;
+  esac
+}
+
 assert_gh_not_called() { # label
   [ ! -s "$GH_SPY_LOG" ] || {
     printf 'FAIL %s: gh was called on a non-conflict run: %s\n' "$1" "$(cat "$GH_SPY_LOG")"
@@ -50,11 +59,14 @@ assert_gh_not_called() { # label
 }
 
 # Run the seam under test with one Fork's config (as the workflow's matrix
-# step will) and the fake gh injected via PATH.
+# step will) and the fake gh injected via PATH. FORK_SYNC_CENTER_REPO — the
+# central management repo conflict issues are filed on — stays injectable so
+# tests never touch the network (real wiring: ticket #6).
 run_entry_point() {
   local config
   config=$(jq -cn --arg fork "$FIX_FORK" --arg upstream "$FIX_UPSTREAM" \
     '{fork: $fork, upstream: $upstream, base_branch: "main"}')
+  export FORK_SYNC_CENTER_REPO="example/fork-sync-center"
   if ENTRY_OUTPUT=$(cd "$TEST_DIR" && PATH="$TESTS_BIN:$PATH" \
     "$SCRIPT" "$config" 2>&1); then
     ENTRY_STATUS=0
@@ -186,6 +198,23 @@ test_conflict_output_names_fork_sync_tag_and_conflicting_own_commits() {
     "the conflict report identifies the conflicting Own Commit"
 }
 
+test_conflict_files_issue_on_center_repo_when_none_is_open() {
+  # No GH_FAKE_ISSUE_LIST staged: the fake gh reports no open issues.
+  run_entry_point
+  local spy
+  spy=$(cat "$GH_SPY_LOG")
+  assert_contains "$spy" "issue create --repo example/fork-sync-center" \
+    "a conflict with no open issue files a new one on the central repo"
+  assert_contains "$spy" "--title fork-sync conflict: $FIX_FORK onto v1.3.2" \
+    "the issue title names the Fork and the Sync Tag"
+  assert_contains "$spy" "Fork: conflicting Own Commit" \
+    "the issue body names the conflicting Own Commit"
+  assert_contains "$spy" "Close this issue" \
+    "the issue body carries the remedy steps"
+  assert_not_contains "$spy" "issue comment" \
+    "no comment is posted when no issue is open"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -197,6 +226,7 @@ TESTS=(
 CONFLICT_TESTS=(
   test_conflict_aborts_all_fork_mutations_and_exits_nonzero
   test_conflict_output_names_fork_sync_tag_and_conflicting_own_commits
+  test_conflict_files_issue_on_center_repo_when_none_is_open
 )
 
 # builder_for <test-name> — the fixture variant a test runs against (the
@@ -228,6 +258,7 @@ run_test() {
     export GIT_EDITOR=true EDITOR=true
     TEST_DIR=$dir
     GH_SPY_LOG=$dir/gh-calls.log
+    export GH_SPY_LOG
     : >"$GH_SPY_LOG"
     "$builder" "$dir"
     "$name"
