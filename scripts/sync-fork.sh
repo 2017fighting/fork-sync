@@ -149,15 +149,16 @@ conflict_issue_body() {
     printf '%s' "$conflicts" | sed 's/^/  /'
   fi
   printf '\nRemedy (manual resolution):\n'
-  printf '  1. Clone the Fork %s and add its Upstream as remote "upstream".\n' "$fork_url"
+  printf '  1. Clone the Fork with the remote named "fork": git clone -o fork %s\n' "$fork_url"
+  printf '     Then add its Upstream as remote "upstream".\n'
   printf "  2. Fetch the Upstream's tags: git fetch upstream --tags\n"
   printf "  3. Rebase the Fork's Own Commits onto the Sync Tag, resolving conflicts:\n"
   # The $(...) below is literal guidance for the human resolving by hand.
   # shellcheck disable=SC2016
   printf '       git rebase --onto refs/tags/%s "$(git merge-base main upstream/HEAD)" main\n' \
     "$sync_tag"
-  printf '  4. Push the result: git push --force-with-lease origin main\n'
-  printf '  5. Mark the Fork: git tag --force %s main && git push --force origin refs/tags/%s\n' \
+  printf '  4. Push the result: git push --force-with-lease fork main\n'
+  printf '  5. Mark the Fork: git tag --force %s main && git push --force fork refs/tags/%s\n' \
     "$sync_tag" "$sync_tag"
   printf '  6. Close this issue; the next run will treat the Fork as synced.\n'
 }

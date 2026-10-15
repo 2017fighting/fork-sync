@@ -105,10 +105,12 @@ open, later conflicted runs comment on it instead of filing duplicates.
 
 Resolve manually, exactly as the issue body spells out:
 
-1. Clone the Fork, add its Upstream as remote `upstream`.
+1. Clone the Fork with the remote named `fork` (`git clone -o fork <fork-url>`;
+   the entry script names the Fork remote `fork` too) and add its Upstream
+   as remote `upstream`.
 2. `git fetch upstream --tags`
 3. Rebase the Fork's Own Commits onto the Sync Tag, resolving conflicts:
    `git rebase --onto refs/tags/<tag> "$(git merge-base main upstream/HEAD)" main`
-4. `git push --force-with-lease origin main`
-5. Mark the Fork: `git tag --force <tag> main && git push --force origin refs/tags/<tag>`
+4. `git push --force-with-lease fork main`
+5. Mark the Fork: `git tag --force <tag> main && git push --force fork refs/tags/<tag>`
 6. Close the issue; the next run treats the Fork as synced.
