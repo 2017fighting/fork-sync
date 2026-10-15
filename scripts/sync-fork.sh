@@ -17,8 +17,18 @@
 #
 # Usage: sync-fork.sh '<fork-config-json>'
 #   {"fork": "<url>", "upstream": "<url>", "base_branch": "main",
-#    "tag_prefix": "v"}
-#   fork, upstream, base_branch are required; tag_prefix defaults to "v".
+#    "tag_prefix": "v", "forward_only": true, "include_prereleases": false}
+#   fork, upstream, base_branch are required. Optional fields (the manifest
+#   contract for the workflow's matrix step):
+#     tag_prefix          — Sync Tag selection only sees tags with this
+#                           prefix; the remainder must be semver. Default "v".
+#     forward_only        — true: never move backward in Upstream history
+#                           (default); false: strict tag sync, rebasing onto
+#                           the Sync Tag even when that rewinds post-tag
+#                           Upstream commits out of the Fork.
+#     include_prereleases — false: prerelease tags (e.g. v1.4.0-rc.1) are
+#                           skipped by selection (default); true: they may
+#                           be chosen as the Sync Tag.
 set -euo pipefail
 
 die() {
@@ -74,6 +84,14 @@ main() {
   base_branch=$(jq -er '.base_branch | strings' <<<"$config") ||
     die "config: .base_branch must be a string"
   tag_prefix=$(jq -r '.tag_prefix // "v"' <<<"$config")
+  # jq's `//` treats false like null, so boolean fields are read with an
+  # explicit null check: a bare `.forward_only // true` would turn a
+  # configured false back into true.
+  jq -e 'if .forward_only == null then true
+         else (.forward_only | type == "boolean") end' <<<"$config" >/dev/null ||
+    die "config: .forward_only must be a boolean"
+  forward_only=$(jq -r 'if .forward_only == null then true
+                        else .forward_only end' <<<"$config")
 
   local sync_tag
   sync_tag=$(select_sync_tag "$upstream_url" "$tag_prefix") ||
@@ -125,9 +143,11 @@ main() {
   # contains the Sync Tag, the Fork never moves backward in Upstream history —
   # skip the rebase entirely (rebase --onto would rewind the post-tag Upstream
   # commits out of the Fork) and only refresh the Mark at the Fork's head.
-  # Strict tag sync (forward_only: false, a later ticket) skips this gate.
+  # Strict tag sync (forward_only: false) skips this gate: the rebase onto the
+  # Sync Tag runs anyway, rewinding post-tag Upstream commits out of the Fork.
   local new_head
-  if "${git[@]}" -C "$work" merge-base --is-ancestor "$sync_commit" "$fork_base_sha"; then
+  if [ "$forward_only" = true ] &&
+    "${git[@]}" -C "$work" merge-base --is-ancestor "$sync_commit" "$fork_base_sha"; then
     new_head=$fork_base_sha
   else
     if [ "$("${git[@]}" -C "$work" rev-list --count "$merge_base..$fork_base_sha")" -eq 0 ]; then

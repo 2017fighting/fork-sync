@@ -50,11 +50,13 @@ assert_gh_not_called() { # label
 }
 
 # Run the seam under test with one Fork's config (as the workflow's matrix
-# step will) and the fake gh injected via PATH.
-run_entry_point() {
+# step will) and the fake gh injected via PATH. Optional argument: extra
+# config fields (a jq object) merged into the canonical config.
+run_entry_point() { # [extra-config-json]
   local config
   config=$(jq -cn --arg fork "$FIX_FORK" --arg upstream "$FIX_UPSTREAM" \
-    '{fork: $fork, upstream: $upstream, base_branch: "main"}')
+    --argjson extra "${1:-null}" \
+    '{fork: $fork, upstream: $upstream, base_branch: "main"} + ($extra // {})')
   if ENTRY_OUTPUT=$(cd "$TEST_DIR" && PATH="$TESTS_BIN:$PATH" \
     "$SCRIPT" "$config" 2>&1); then
     ENTRY_STATUS=0
@@ -244,6 +246,40 @@ test_pure_fork_fast_forwards_to_sync_tag() {
   assert_gh_not_called "a pure-fork sync never notifies"
 }
 
+test_strict_mode_rewinds_post_tag_upstream_commits() {
+  # Strict tag sync (forward_only: false, spec story 14): the Fork's main
+  # already carries 4 post-tag Upstream commits plus 2 Own Commits. The sync
+  # must rebase the Own Commits onto the Sync Tag anyway -- the post-tag
+  # Upstream commits are rewound OUT of the Fork -- and Mark the rewound head.
+  local upstream_v132 upstream_tip
+  upstream_v132=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.2)
+  upstream_tip=$(remote_sha "$FIX_UPSTREAM" refs/heads/main)
+  build_already_contains_scenario "$TEST_DIR"
+  clone_fork_observer
+
+  run_entry_point '{"forward_only": false}'
+  assert_rc 0 "$ENTRY_STATUS" "strict-mode sync exits 0"
+  fetch_synced_base_branch
+
+  assert_eq "$(git -C "$OBSERVE" rev-list --count refs/heads/after)" 6 \
+    "history holds the 4 pre-tag Upstream commits + 2 rebased Own Commits"
+  assert_eq "$upstream_v132" "$(git -C "$OBSERVE" rev-parse refs/heads/after~2)" \
+    "the commit under the Own Commits is the Sync Tag commit"
+  if git -C "$OBSERVE" merge-base --is-ancestor "$upstream_tip" refs/heads/after; then
+    printf 'FAIL rewind: the post-tag Upstream tip is still an ancestor of the synced head\n'
+    return 1
+  fi
+  assert_eq "Fork: first Own Commit" "$(git -C "$OBSERVE" log -1 --format=%s refs/heads/after~1)" \
+    "first Own Commit preserved"
+  assert_eq "Fork: second Own Commit" "$(git -C "$OBSERVE" log -1 --format=%s refs/heads/after)" \
+    "second Own Commit preserved"
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$SYNCED_HEAD" \
+    "the Mark (v1.3.2) points at the rewound Fork head"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the run reports the chosen Sync Tag"
+  assert_gh_not_called "a strict-mode sync never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -251,6 +287,7 @@ TESTS=(
   test_leaves_upstream_untouched_and_never_notifies
   test_noop_when_mark_already_points_at_base_head
   test_already_contains_refreshes_mark_leaving_history_untouched
+  test_strict_mode_rewinds_post_tag_upstream_commits
   test_pure_fork_fast_forwards_to_sync_tag
 )
 
