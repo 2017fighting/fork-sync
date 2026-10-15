@@ -215,6 +215,35 @@ test_already_contains_refreshes_mark_leaving_history_untouched() {
   assert_gh_not_called "a forward-only sync never notifies"
 }
 
+test_pure_fork_fast_forwards_to_sync_tag() {
+  local upstream_v132 upstream_v131
+  upstream_v132=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.2)
+  upstream_v131=$(remote_sha "$FIX_UPSTREAM" refs/tags/v1.3.1)
+  build_pure_fork_scenario "$TEST_DIR"
+  clone_fork_observer
+
+  assert_eq "$(remote_sha "$FIX_FORK" refs/heads/main)" "$upstream_v131" \
+    "fixture: the pure Fork sits at v1.3.1 with zero Own Commits"
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "pure-fork sync exits 0"
+
+  # Fast-forward: the base branch lands exactly on the Sync Tag's commit —
+  # no commit rewritten — and the old head stays inside the history.
+  assert_eq "$(remote_sha "$FIX_FORK" refs/heads/main)" "$upstream_v132" \
+    "the base branch fast-forwards to the Sync Tag's commit"
+  fetch_synced_base_branch
+  if ! git -C "$OBSERVE" merge-base --is-ancestor "$OBSERVED_PRE_HEAD" refs/heads/after; then
+    printf 'FAIL fast-forward: the pre-sync head is not an ancestor of the synced head\n'
+    return 1
+  fi
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" "$upstream_v132" \
+    "the Mark is created at the Sync Tag's commit, now the Fork's head"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the run reports the chosen Sync Tag"
+  assert_gh_not_called "a pure-fork sync never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
@@ -222,6 +251,7 @@ TESTS=(
   test_leaves_upstream_untouched_and_never_notifies
   test_noop_when_mark_already_points_at_base_head
   test_already_contains_refreshes_mark_leaving_history_untouched
+  test_pure_fork_fast_forwards_to_sync_tag
 )
 
 run_test() {

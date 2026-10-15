@@ -7,7 +7,7 @@
 #      the configured prefix, stable releases only (prereleases excluded);
 #   2. rebases the Fork's Own Commits onto the Sync Tag (rebase --onto over
 #      the merge-base with the Upstream's default branch), yielding linear
-#      history;
+#      history; a pure Fork with zero Own Commits fast-forwards instead;
 #   3. force-pushes the Fork's base branch, with lease against the just-fetched
 #      ref;
 #   4. Marks the Fork: a tag of the Sync Tag's name pointing at the Fork's own
@@ -130,8 +130,15 @@ main() {
   if "${git[@]}" -C "$work" merge-base --is-ancestor "$sync_commit" "$fork_base_sha"; then
     new_head=$fork_base_sha
   else
-    "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
-    "${git[@]}" -C "$work" rebase --onto "$sync_commit" "$merge_base" "$base_branch"
+    if [ "$("${git[@]}" -C "$work" rev-list --count "$merge_base..$fork_base_sha")" -eq 0 ]; then
+      # Pure fork (zero Own Commits): fast-forward the base branch straight
+      # to the Sync Tag — no rebase machinery for a mirror with nothing to
+      # replay.
+      "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$sync_commit"
+    else
+      "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
+      "${git[@]}" -C "$work" rebase --onto "$sync_commit" "$merge_base" "$base_branch"
+    fi
     new_head=$("${git[@]}" -C "$work" rev-parse "refs/heads/$base_branch")
 
     "${git[@]}" -C "$work" push --quiet \

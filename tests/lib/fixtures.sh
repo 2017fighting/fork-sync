@@ -88,3 +88,20 @@ build_already_contains_scenario() { # <dir>
   git -C "$work" push --quiet --force "$FIX_FORK" refs/heads/main:refs/heads/main
   rm -rf "$work"
 }
+
+# Pure-fork variant (spec issue #1, "Apply method"): rewrites the canonical
+# fixture's Fork into a zero-Own-Commits mirror — main at v1.3.1 (the Sync
+# Tag's parent), carrying only the tags that existed at fork time (v1.3.0,
+# v1.3.1, no inherited v1.3.2), so the fast-forwarded base branch and the
+# freshly created Mark are both observable.
+build_pure_fork_scenario() { # <dir>
+  local dir=$1
+  local work="$dir/variant-work"
+
+  git clone --quiet "$FIX_UPSTREAM" "$work"
+  git -C "$work" checkout --quiet -b fork-main refs/tags/v1.3.1
+  git -C "$work" push --quiet --force "$FIX_FORK" fork-main:refs/heads/main
+  git -C "$work" push --quiet "$FIX_FORK" \
+    refs/tags/v1.3.0 refs/tags/v1.3.1 :refs/tags/v1.3.2
+  rm -rf "$work"
+}
