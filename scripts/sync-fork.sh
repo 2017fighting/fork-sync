@@ -120,6 +120,8 @@ main() {
   # head, force-moving an inherited Upstream tag of that name (ADR-0001).
   "${git[@]}" -C "$work" tag --force "$sync_tag" "$new_head"
   "${git[@]}" -C "$work" push --quiet --force fork "refs/tags/$sync_tag"
+
+  printf 'Sync Tag: %s\n' "$sync_tag"
 }
 
 main "$@"

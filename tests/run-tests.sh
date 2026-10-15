@@ -141,9 +141,30 @@ test_marks_fork_head_by_force_moving_inherited_tag() {
   }
 }
 
+test_reports_chosen_sync_tag() {
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "sync exits 0"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the run reports the chosen Sync Tag"
+}
+
+test_leaves_upstream_untouched_and_never_notifies() {
+  local upstream_before
+  upstream_before=$(git ls-remote "$FIX_UPSTREAM")
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "sync exits 0"
+
+  assert_eq "$(git ls-remote "$FIX_UPSTREAM")" "$upstream_before" \
+    "the Upstream remote is not mutated by the sync"
+  assert_gh_not_called "a happy-path sync never touches the notification dependency"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
+  test_reports_chosen_sync_tag
+  test_leaves_upstream_untouched_and_never_notifies
 )
 
 run_test() {
