@@ -11,7 +11,11 @@
 #   3. force-pushes the Fork's base branch, with lease against the just-fetched
 #      ref;
 #   4. Marks the Fork: a tag of the Sync Tag's name pointing at the Fork's own
-#      head, force-moving any inherited tag of that name (ADR-0001).
+#      head, force-moving any inherited tag of that name (ADR-0001);
+#   5. on a rebase conflict: aborts before any Fork mutation (nothing has
+#      been pushed yet), reports the Fork, the Sync Tag, and the conflicting
+#      Own Commits, and files (or reuses) a resolution issue on the central
+#      management repo via gh.
 #
 # The Upstream is only ever read (ls-remote / fetch), never mutated.
 #
@@ -19,6 +23,10 @@
 #   {"fork": "<url>", "upstream": "<url>", "base_branch": "main",
 #    "tag_prefix": "v"}
 #   fork, upstream, base_branch are required; tag_prefix defaults to "v".
+# Environment:
+#   FORK_SYNC_CENTER_REPO — owner/name of the central management repo where
+#   conflict issues are filed via gh; required only when a conflict must be
+#   reported (the workflow injects it — ticket #6).
 set -euo pipefail
 
 die() {
@@ -76,12 +84,11 @@ conflicting_own_commits() {
 # so a failure here means simply not pushing. Reports what conflicted and
 # exits non-zero. Never returns.
 report_rebase_conflict() {
-  local fork_url=$1 sync_tag=$2 work=$3 rebase_output=$4 commit
+  local fork_url=$1 sync_tag=$2 work=$3 rebase_output=$4 commit conflicts=""
   printf 'sync-fork: CONFLICT rebasing Own Commits; aborted\n' >&2
   printf 'sync-fork:   Fork: %s\n' "$fork_url" >&2
   printf 'sync-fork:   Sync Tag: %s\n' "$sync_tag" >&2
   printf 'sync-fork:   conflicting Own Commits:\n' >&2
-  local conflicts=""
   while IFS= read -r commit; do
     printf 'sync-fork:     %s\n' "$commit" >&2
     conflicts+="$commit"$'\n'
