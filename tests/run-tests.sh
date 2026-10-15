@@ -160,11 +160,35 @@ test_leaves_upstream_untouched_and_never_notifies() {
   assert_gh_not_called "a happy-path sync never touches the notification dependency"
 }
 
+test_noop_when_mark_already_points_at_base_head() {
+  # The first sync Marks the Fork (v1.3.2 at main's head). A rerun before
+  # any new Upstream tag must be a no-op: nothing pushed, no Mark changes.
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "the first sync exits 0"
+  assert_eq "$(remote_sha "$FIX_FORK" refs/tags/v1.3.2)" \
+    "$(remote_sha "$FIX_FORK" refs/heads/main)" \
+    "fixture: the Mark sits at the base branch head after the first sync"
+
+  local fork_refs
+  fork_refs=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point
+  assert_rc 0 "$ENTRY_STATUS" "the rerun with no new tag exits 0"
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_refs" \
+    "the no-op pushes nothing: no ref on the Fork changes"
+  assert_contains "$ENTRY_OUTPUT" "No-op" \
+    "the no-op is clearly distinguished from a sync in the output"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the stable Sync Tag line survives for the status matrix"
+  assert_gh_not_called "a no-op never notifies"
+}
+
 TESTS=(
   test_syncs_fork_onto_sync_tag_with_rebased_own_commits
   test_marks_fork_head_by_force_moving_inherited_tag
   test_reports_chosen_sync_tag
   test_leaves_upstream_untouched_and_never_notifies
+  test_noop_when_mark_already_points_at_base_head
 )
 
 run_test() {

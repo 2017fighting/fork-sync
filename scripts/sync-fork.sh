@@ -99,6 +99,21 @@ main() {
   merge_base=$("${git[@]}" -C "$work" merge-base \
     "refs/remotes/fork/$base_branch" "refs/remotes/upstream/$default_branch")
 
+  # No-op detection (spec issue #1, "No-op detection"): when the Fork already
+  # carries a Mark equal to the Sync Tag pointing at its current base branch
+  # head, the run does nothing. The Mark is read straight from the Fork
+  # remote (ls-remote), never from the work repo: fetching a Fork whose
+  # inherited tag was force-moved only yields "! [rejected] (already exists)"
+  # and the local tag would silently keep the Upstream's position.
+  local mark_sha
+  mark_sha=$(git ls-remote "$fork_url" "refs/tags/$sync_tag" | cut -f1)
+  if [ -n "$mark_sha" ] && [ "$mark_sha" = "$fork_base_sha" ]; then
+    printf 'No-op: the Mark %s already points at the head of %s\n' \
+      "$sync_tag" "$base_branch"
+    printf 'Sync Tag: %s\n' "$sync_tag"
+    return 0
+  fi
+
   # Rebase rewrites the Own Commits; it needs a committer identity even on
   # runners without one configured. Authors are preserved by the rebase.
   if [ -z "$("${git[@]}" -C "$work" config user.email)" ]; then
