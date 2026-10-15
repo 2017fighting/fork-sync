@@ -61,8 +61,57 @@ build_canonical_scenario() {
   # Inherited Upstream tag, still pointing at the Upstream's tagged commit.
   git -C "$work" push --quiet "$dir/fork.git" refs/tags/v1.3.2
 
+  rm -rf -- "$work"
+
+  # Consumed by the sourcing test runner.
+  # shellcheck disable=SC2034
+  FIX_UPSTREAM="file://$dir/upstream.git"
+  # shellcheck disable=SC2034
+  FIX_FORK="file://$dir/fork.git"
+}
+
+# build_conflict_scenario <dir> — the rebase-conflict variant of the canonical
+# scenario (spec issue #1, Testing Decisions): same Upstream shape, but the
+# Fork's single Own Commit edits the same line of the same file the Sync
+# Tag's commit (u4) edits, so rebase --onto conflicts instead of replaying
+# cleanly. Consumed by the conflict tests; sets FIX_UPSTREAM/FIX_FORK.
+build_conflict_scenario() {
+  local dir=$1
+  local work="$dir/conflict-work"
+  FIXTURE_DATE=1700000000
+
+  git -c init.defaultBranch=main init --quiet --bare "$dir/upstream.git"
+  git -c init.defaultBranch=main init --quiet --bare "$dir/fork.git"
+  git -c init.defaultBranch=main init --quiet "$work"
+
+  # Upstream main: v1.3.2 + 4 commits; u4 (the Sync Tag) rewrites line 1.
+  printf 'readme line 1: original\n' >"$work/readme"
+  git -C "$work" add readme
+  fixture_commit "$work" "Upstream: u1"
+  fixture_commit "$work" "Upstream: u2"
+  fixture_commit "$work" "Upstream: u3"; git -C "$work" tag v1.3.1
+  printf 'readme line 1: rewritten by the Upstream\n' >"$work/readme"
+  git -C "$work" add readme
+  fixture_commit "$work" "Upstream: u4"; git -C "$work" tag v1.3.2
+  fixture_commit "$work" "Upstream: u5"
+  fixture_commit "$work" "Upstream: u6"
+  fixture_commit "$work" "Upstream: u7"
+  fixture_commit "$work" "Upstream: u8"
+  git -C "$work" push --quiet "$dir/upstream.git" refs/heads/main
+  git -C "$work" push --quiet "$dir/upstream.git" --tags
+
+  # Fork main: forked at u3; the single Own Commit rewrites the same line,
+  # so replaying it onto u4 conflicts.
+  git -C "$work" checkout --quiet -b fork-main v1.3.1
+  printf 'readme line 1: rewritten by the Fork\n' >"$work/readme"
+  git -C "$work" add readme
+  fixture_commit "$work" "Fork: conflicting Own Commit"
+  git -C "$work" push --quiet "$dir/fork.git" fork-main:refs/heads/main
+  # Inherited Upstream tag, as in the canonical scenario.
+  git -C "$work" push --quiet "$dir/fork.git" refs/tags/v1.3.2
+
   # The remotes must stand alone: drop the scratch checkout.
-  rm -rf "$work"
+  rm -rf -- "$work"
 
   # Consumed by the sourcing test runner.
   # shellcheck disable=SC2034

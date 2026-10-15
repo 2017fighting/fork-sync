@@ -11,7 +11,11 @@
 #   3. force-pushes the Fork's base branch, with lease against the just-fetched
 #      ref;
 #   4. Marks the Fork: a tag of the Sync Tag's name pointing at the Fork's own
-#      head, force-moving any inherited tag of that name (ADR-0001).
+#      head, force-moving any inherited tag of that name (ADR-0001);
+#   5. on a rebase conflict: aborts before any Fork mutation (nothing has
+#      been pushed yet), reports the Fork, the Sync Tag, and the conflicting
+#      Own Commits, and files (or reuses) a resolution issue on the central
+#      management repo via gh.
 #
 # The Upstream is only ever read (ls-remote / fetch), never mutated.
 #
@@ -29,6 +33,10 @@
 #     include_prereleases — false: prerelease tags (e.g. v1.4.0-rc.1) are
 #                           skipped by selection (default); true: they may
 #                           be chosen as the Sync Tag.
+# Environment:
+#   FORK_SYNC_CENTER_REPO — owner/name of the central management repo where
+#   conflict issues are filed via gh; required only when a conflict must be
+#   reported (the workflow injects it — ticket #6).
 set -euo pipefail
 
 die() {
@@ -88,6 +96,100 @@ select_sync_tag() {
     return 2
   fi
   return 3
+}
+
+# conflicting_own_commits <work> <rebase_output> — prints one
+# "<sha> <subject>" line per Own Commit the failed rebase stopped on, taken
+# from git's own "could not apply <sha>... <subject>" lines (both the
+# "error: "-prefixed form and the trailing summary form).
+conflicting_own_commits() {
+  local work=$1 rebase_output=$2 short subject sha
+  while IFS=$'\t' read -r short subject; do
+    [ -n "$short" ] || continue
+    sha=$("${git[@]}" -C "$work" rev-parse --quiet --verify "$short^{commit}") ||
+      sha=$short
+    printf '%s %s\n' "$sha" "$subject"
+  done < <(printf '%s\n' "$rebase_output" |
+    sed -n 's/^\(error: \)\{0,1\}[Cc]ould not apply \([0-9a-f]\{7,\}\)\.\.\. \(#\{0,1\} \)\{0,1\}\(.*\)$/\2\t\4/p' |
+    awk -F'\t' '!seen[$1]++')
+}
+
+# report_rebase_conflict <fork_url> <sync_tag> <work> <rebase_output> — the
+# rebase of the Own Commits failed (a content conflict, in practice: the
+# rebase runs on already-fetched objects). Aborting needs no undoing: the
+# Fork remote is only ever mutated by the pushes after a successful rebase,
+# so a failure here means simply not pushing. Reports what conflicted and
+# exits non-zero. Never returns.
+report_rebase_conflict() {
+  local fork_url=$1 sync_tag=$2 work=$3 rebase_output=$4 commit conflicts=""
+  printf 'sync-fork: CONFLICT rebasing Own Commits; aborted\n' >&2
+  printf 'sync-fork:   Fork: %s\n' "$fork_url" >&2
+  printf 'sync-fork:   Sync Tag: %s\n' "$sync_tag" >&2
+  printf 'sync-fork:   conflicting Own Commits:\n' >&2
+  while IFS= read -r commit; do
+    printf 'sync-fork:     %s\n' "$commit" >&2
+    conflicts+="$commit"$'\n'
+  done < <(conflicting_own_commits "$work" "$rebase_output")
+  printf 'sync-fork:   the Fork is untouched (no branch or tag moved)\n' >&2
+  notify_conflict "$fork_url" "$sync_tag" "$conflicts"
+  exit 1
+}
+
+# conflict_issue_body <fork_url> <sync_tag> <conflicts> — the issue text:
+# what aborted, which Own Commits conflicted, and the remedy (resolve
+# manually, push, Mark, close).
+conflict_issue_body() {
+  local fork_url=$1 sync_tag=$2 conflicts=$3
+  printf 'The automated sync of the Fork %s onto the Upstream Sync Tag %s\n' \
+    "$fork_url" "$sync_tag"
+  printf "was aborted: rebasing the Fork's Own Commits onto the tag hit a\n"
+  printf 'conflict. The Fork is untouched — no branch and no tag was moved.\n'
+  if [ -n "$conflicts" ]; then
+    printf '\nConflicting Own Commits:\n'
+    printf '%s' "$conflicts" | sed 's/^/  /'
+  fi
+  printf '\nRemedy (manual resolution):\n'
+  printf '  1. Clone the Fork %s and add its Upstream as remote "upstream".\n' "$fork_url"
+  printf "  2. Fetch the Upstream's tags: git fetch upstream --tags\n"
+  printf "  3. Rebase the Fork's Own Commits onto the Sync Tag, resolving conflicts:\n"
+  # The $(...) below is literal guidance for the human resolving by hand.
+  # shellcheck disable=SC2016
+  printf '       git rebase --onto refs/tags/%s "$(git merge-base main upstream/HEAD)" main\n' \
+    "$sync_tag"
+  printf '  4. Push the result: git push --force-with-lease origin main\n'
+  printf '  5. Mark the Fork: git tag --force %s main && git push --force origin refs/tags/%s\n' \
+    "$sync_tag" "$sync_tag"
+  printf '  6. Close this issue; the next run will treat the Fork as synced.\n'
+}
+
+# notify_conflict <fork_url> <sync_tag> <conflicts> — the notification step
+# (spec issue #1, Conflict handling): file an issue on the central
+# management repo titled after the Fork and the Sync Tag, with remedy steps.
+# The repo is FORK_SYNC_CENTER_REPO (owner/name), injectable so tests run
+# against the fake gh; the workflow wires the real value (ticket #6).
+# Reuse: while an issue about this Fork's sync conflicts is still open, the
+# run comments on it instead of filing a duplicate (spec issue #1, story
+# 18). Discovery is a title search for the Fork, matching the deterministic
+# title below.
+notify_conflict() {
+  local fork_url=$1 sync_tag=$2 conflicts=$3
+  local center title body number issues
+  center=${FORK_SYNC_CENTER_REPO:-}
+  [ -n "$center" ] ||
+    die "FORK_SYNC_CENTER_REPO (owner/name of the central management repo) is unset: cannot file the conflict issue"
+  title="fork-sync conflict: $fork_url onto $sync_tag"
+  body=$(conflict_issue_body "$fork_url" "$sync_tag" "$conflicts")
+  issues=$(gh issue list --repo "$center" --state open \
+    --search "fork-sync conflict $fork_url in:title" --json number) ||
+    issues='[]'
+  number=$(jq -r '.[0].number // empty' <<<"$issues") || number=''
+  if [ -n "$number" ]; then
+    gh issue comment "$number" --repo "$center" --body "$body"
+    printf 'sync-fork: conflict reported on issue #%s of %s\n' "$number" "$center" >&2
+  else
+    gh issue create --repo "$center" --title "$title" --body "$body"
+    printf 'sync-fork: conflict filed as a new issue on %s\n' "$center" >&2
+  fi
 }
 
 # upstream_default_branch <upstream_url> — Own Commits are defined against the
@@ -194,7 +296,15 @@ main() {
       "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$sync_commit"
     else
       "${git[@]}" -C "$work" checkout --quiet -B "$base_branch" "$fork_base_sha"
-      "${git[@]}" -C "$work" rebase --onto "$sync_commit" "$merge_base" "$base_branch"
+      # On a conflict the rebase fails before anything has been pushed, so
+      # aborting is simply not reaching the pushes below (report_rebase_conflict
+      # never returns).
+      local rebase_output
+      if ! rebase_output=$("${git[@]}" -C "$work" rebase --onto "$sync_commit" \
+        "$merge_base" "$base_branch" 2>&1); then
+        report_rebase_conflict "$fork_url" "$sync_tag" "$work" "$rebase_output"
+      fi
+      printf '%s\n' "$rebase_output" >&2
     fi
     new_head=$("${git[@]}" -C "$work" rev-parse "refs/heads/$base_branch")
 

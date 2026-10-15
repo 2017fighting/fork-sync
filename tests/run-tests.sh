@@ -42,6 +42,15 @@ assert_contains() { # haystack needle label
   return 1
 }
 
+assert_not_contains() { # haystack needle label
+  case "$1" in
+    *"$2"*)
+      printf 'FAIL %s: output unexpectedly contained "%s"\n  output: %s\n' "$3" "$2" "$1"
+      return 1
+      ;;
+  esac
+}
+
 assert_gh_not_called() { # label
   [ ! -s "$GH_SPY_LOG" ] || {
     printf 'FAIL %s: gh was called on a non-conflict run: %s\n' "$1" "$(cat "$GH_SPY_LOG")"
@@ -52,11 +61,15 @@ assert_gh_not_called() { # label
 # Run the seam under test with one Fork's config (as the workflow's matrix
 # step will) and the fake gh injected via PATH. Optional argument: extra
 # config fields (a jq object) merged into the canonical config.
+# FORK_SYNC_CENTER_REPO — the central management repo conflict issues are
+# filed on — stays injectable so tests never touch the network (real wiring:
+# ticket #6).
 run_entry_point() { # [extra-config-json]
   local config
   config=$(jq -cn --arg fork "$FIX_FORK" --arg upstream "$FIX_UPSTREAM" \
     --argjson extra "${1:-null}" \
     '{fork: $fork, upstream: $upstream, base_branch: "main"} + ($extra // {})')
+  export FORK_SYNC_CENTER_REPO="example/fork-sync-center"
   if ENTRY_OUTPUT=$(cd "$TEST_DIR" && PATH="$TESTS_BIN:$PATH" \
     "$SCRIPT" "$config" 2>&1); then
     ENTRY_STATUS=0
@@ -160,6 +173,69 @@ test_leaves_upstream_untouched_and_never_notifies() {
   assert_eq "$(git ls-remote "$FIX_UPSTREAM")" "$upstream_before" \
     "the Upstream remote is not mutated by the sync"
   assert_gh_not_called "a happy-path sync never touches the notification dependency"
+}
+
+test_conflict_aborts_all_fork_mutations_and_exits_nonzero() {
+  local fork_before
+  fork_before=$(git ls-remote "$FIX_FORK")
+
+  run_entry_point
+  if [ "$ENTRY_STATUS" -eq 0 ]; then
+    printf 'FAIL conflict run: expected a non-zero exit code, got 0\n'
+    return 1
+  fi
+
+  # ls-remote lists every branch and tag, so identical output proves the
+  # aborted run moved nothing on the Fork remote.
+  assert_eq "$(git ls-remote "$FIX_FORK")" "$fork_before" \
+    "a conflicted run leaves the Fork's branches and tags byte-identical"
+}
+
+test_conflict_output_names_fork_sync_tag_and_conflicting_own_commits() {
+  run_entry_point
+  assert_contains "$ENTRY_OUTPUT" "$FIX_FORK" \
+    "the conflict report identifies the Fork"
+  assert_contains "$ENTRY_OUTPUT" "Sync Tag: v1.3.2" \
+    "the conflict report identifies the Sync Tag"
+  assert_contains "$ENTRY_OUTPUT" "Fork: conflicting Own Commit" \
+    "the conflict report identifies the conflicting Own Commit"
+}
+
+test_conflict_files_issue_on_center_repo_when_none_is_open() {
+  # No GH_FAKE_ISSUE_LIST staged: the fake gh reports no open issues.
+  run_entry_point
+  local spy
+  spy=$(cat "$GH_SPY_LOG")
+  assert_contains "$spy" "issue create --repo example/fork-sync-center" \
+    "a conflict with no open issue files a new one on the central repo"
+  assert_contains "$spy" "--title fork-sync conflict: $FIX_FORK onto v1.3.2" \
+    "the issue title names the Fork and the Sync Tag"
+  assert_contains "$spy" "Fork: conflicting Own Commit" \
+    "the issue body names the conflicting Own Commit"
+  assert_contains "$spy" "Close this issue" \
+    "the issue body carries the remedy steps"
+  assert_not_contains "$spy" "issue comment" \
+    "no comment is posted when no issue is open"
+}
+
+test_conflict_comments_on_open_issue_instead_of_duplicating() {
+  # Stage the open-issue state the fake gh reports: one open conflict issue
+  # for this Fork, filed by an earlier conflicted run.
+  printf '[{"number": 42, "title": "fork-sync conflict: %s onto v1.3.2"}]\n' \
+    "$FIX_FORK" >"$TEST_DIR/gh-issue-list.json"
+  export GH_FAKE_ISSUE_LIST="$TEST_DIR/gh-issue-list.json"
+
+  run_entry_point
+  local spy
+  spy=$(cat "$GH_SPY_LOG")
+  assert_contains "$spy" "issue list --repo example/fork-sync-center" \
+    "discovery looks for open issues on the central repo"
+  assert_contains "$spy" "$FIX_FORK in:title" \
+    "discovery searches issue titles for this Fork"
+  assert_contains "$spy" "issue comment 42 --repo example/fork-sync-center" \
+    "an open issue for the Fork is commented on"
+  assert_not_contains "$spy" "issue create" \
+    "no duplicate issue is created while one is open"
 }
 
 test_noop_when_mark_already_points_at_base_head() {
@@ -410,8 +486,30 @@ TESTS=(
   test_pure_fork_fast_forwards_to_sync_tag
 )
 
+# Conflict-path tests run against the rebase-conflict fixture variant.
+CONFLICT_TESTS=(
+  test_conflict_aborts_all_fork_mutations_and_exits_nonzero
+  test_conflict_output_names_fork_sync_tag_and_conflicting_own_commits
+  test_conflict_files_issue_on_center_repo_when_none_is_open
+  test_conflict_comments_on_open_issue_instead_of_duplicating
+)
+
+# builder_for <test-name> — the fixture variant a test runs against (the
+# runner's default is the canonical scenario; conflict tests are listed in
+# CONFLICT_TESTS).
+builder_for() {
+  local name
+  for name in "${CONFLICT_TESTS[@]}"; do
+    if [ "$name" = "$1" ]; then
+      printf 'build_conflict_scenario\n'
+      return
+    fi
+  done
+  printf 'build_canonical_scenario\n'
+}
+
 run_test() {
-  local name=$1 dir out rc
+  local name=$1 builder=${2:-build_canonical_scenario} dir out rc
   dir=$(mktemp -d "${TMPDIR:-/tmp}/fork-sync-test.XXXXXX")
   printf -- '--- %s\n' "$name"
   # The group runs inside command substitution, NOT in an if-condition: bash
@@ -425,8 +523,9 @@ run_test() {
     export GIT_EDITOR=true EDITOR=true
     TEST_DIR=$dir
     GH_SPY_LOG=$dir/gh-calls.log
+    export GH_SPY_LOG
     : >"$GH_SPY_LOG"
-    build_canonical_scenario "$dir"
+    "$builder" "$dir"
     "$name"
   } 2>&1)
   rc=$?
@@ -445,9 +544,10 @@ run_test() {
 main() {
   local name
   if [ "$#" -gt 0 ]; then
-    for name in "$@"; do run_test "$name"; done
+    for name in "$@"; do run_test "$name" "$(builder_for "$name")"; done
   else
-    for name in "${TESTS[@]}"; do run_test "$name"; done
+    for name in "${TESTS[@]}"; do run_test "$name" "$(builder_for "$name")"; done
+    for name in "${CONFLICT_TESTS[@]}"; do run_test "$name" build_conflict_scenario; done
   fi
   printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
   if [ "$FAIL" -ne 0 ]; then
