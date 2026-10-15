@@ -59,7 +59,7 @@ git=(git -c commit.gpgSign=false -c tag.gpgSign=false)
 #   3 — no tag matched the prefix at all.
 select_sync_tag() {
   local upstream_url=$1 prefix=$2 include_prereleases=$3
-  local name version version_ok best=""
+  local name version version_ok greatest_version=""
   local saw_tag=false saw_prerelease=false
   while IFS=$'\t' read -r _sha ref; do
     name=${ref#refs/tags/}
@@ -79,14 +79,14 @@ select_sync_tag() {
       fi
     fi # anything else: non-semver names never qualify
     if [ "$version_ok" = true ]; then
-      if [ -z "$best" ] ||
-        [ "$(printf '%s\n%s\n' "$best" "$version" | sort -V | tail -n 1)" = "$version" ]; then
-        best=$version
+      if [ -z "$greatest_version" ] ||
+        [ "$(printf '%s\n%s\n' "$greatest_version" "$version" | sort -V | tail -n 1)" = "$version" ]; then
+        greatest_version=$version
       fi
     fi
   done < <(git ls-remote --tags "$upstream_url")
-  if [ -n "$best" ]; then
-    printf '%s%s\n' "$prefix" "$best"
+  if [ -n "$greatest_version" ]; then
+    printf '%s%s\n' "$prefix" "$greatest_version"
     return 0
   fi
   if [ "$saw_tag" = false ]; then
@@ -174,22 +174,22 @@ conflict_issue_body() {
 # title below.
 notify_conflict() {
   local fork_url=$1 sync_tag=$2 conflicts=$3
-  local center title body number issues
-  center=${FORK_SYNC_CENTER_REPO:-}
-  [ -n "$center" ] ||
+  local center_repo title body number issues
+  center_repo=${FORK_SYNC_CENTER_REPO:-}
+  [ -n "$center_repo" ] ||
     die "FORK_SYNC_CENTER_REPO (owner/name of the central management repo) is unset: cannot file the conflict issue"
   title="fork-sync conflict: $fork_url onto $sync_tag"
   body=$(conflict_issue_body "$fork_url" "$sync_tag" "$conflicts")
-  issues=$(gh issue list --repo "$center" --state open \
+  issues=$(gh issue list --repo "$center_repo" --state open \
     --search "fork-sync conflict $fork_url in:title" --json number) ||
     issues='[]'
   number=$(jq -r '.[0].number // empty' <<<"$issues") || number=''
   if [ -n "$number" ]; then
-    gh issue comment "$number" --repo "$center" --body "$body"
-    printf 'sync-fork: conflict reported on issue #%s of %s\n' "$number" "$center" >&2
+    gh issue comment "$number" --repo "$center_repo" --body "$body"
+    printf 'sync-fork: conflict reported on issue #%s of %s\n' "$number" "$center_repo" >&2
   else
-    gh issue create --repo "$center" --title "$title" --body "$body"
-    printf 'sync-fork: conflict filed as a new issue on %s\n' "$center" >&2
+    gh issue create --repo "$center_repo" --title "$title" --body "$body"
+    printf 'sync-fork: conflict filed as a new issue on %s\n' "$center_repo" >&2
   fi
 }
 
