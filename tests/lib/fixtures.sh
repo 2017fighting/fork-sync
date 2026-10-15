@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Fixture builder for the per-Fork sync seam tests (spec issue #1, Testing
 # Decisions). Builds the canonical scenario over bare file:// remotes:
 #
@@ -57,6 +58,9 @@ build_canonical_scenario() {
   # The remotes must stand alone: drop the scratch checkout.
   rm -rf "$work"
 
+  # Consumed by the sourcing test runner.
+  # shellcheck disable=SC2034
   FIX_UPSTREAM="file://$dir/upstream.git"
+  # shellcheck disable=SC2034
   FIX_FORK="file://$dir/fork.git"
 }
