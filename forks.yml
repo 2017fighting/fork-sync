@@ -47,7 +47,7 @@ forks:
     # include_prereleases: false
   - fork: "https://github.com/2017fighting/qui.git"
     upstream: "https://github.com/autobrr/qui.git"
-    base_branch: "main"
+    base_branch: "develop"
   - fork: "https://github.com/2017fighting/hath-rust.git"
     upstream: "https://github.com/james58899/hath-rust.git"
-    base_branch: "main"
+    base_branch: "feat/natmap-sync"
